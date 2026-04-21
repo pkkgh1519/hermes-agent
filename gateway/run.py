@@ -8219,6 +8219,11 @@ class GatewayRunner:
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
+            route_target=context.source.route_target or "",
+            route_label=context.source.route_label or "",
+            route_mode=context.source.route_mode or "",
+            route_notebook=context.source.route_notebook or "",
+            route_notebook_id=context.source.route_notebook_id or "",
         )
 
     def _clear_session_env(self, tokens: list) -> None:

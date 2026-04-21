@@ -1193,6 +1193,13 @@ def cmd_gateway(args):
     gateway_command(args)
 
 
+def cmd_notebooklm(args):
+    """NotebookLM / NLM Lab management commands."""
+    from hermes_cli.notebooklm import notebooklm_command
+
+    notebooklm_command(args)
+
+
 def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
     _require_tty("whatsapp")
@@ -6948,6 +6955,51 @@ For more help on a command:
     model_parser.set_defaults(func=cmd_model)
 
     # =========================================================================
+    # notebooklm command
+    # =========================================================================
+    notebooklm_parser = subparsers.add_parser(
+        "notebooklm",
+        help="Manage NotebookLM / NLM Lab integration",
+        description="Install, authenticate, and inspect NotebookLM integration state",
+    )
+    notebooklm_subparsers = notebooklm_parser.add_subparsers(dest="notebooklm_command")
+
+    notebooklm_doctor = notebooklm_subparsers.add_parser(
+        "doctor", help="Check NotebookLM install, browser, and login readiness"
+    )
+    notebooklm_doctor.add_argument(
+        "--json", action="store_true", help="Print machine-readable JSON output"
+    )
+
+    notebooklm_install = notebooklm_subparsers.add_parser(
+        "install", help="Install notebooklm-py and optional browser dependencies"
+    )
+    notebooklm_install.add_argument(
+        "--browser",
+        action="store_true",
+        help="Install browser dependencies (Playwright + Chromium) too",
+    )
+
+    notebooklm_login = notebooklm_subparsers.add_parser(
+        "login", help="Authenticate NotebookLM using a stored profile"
+    )
+    notebooklm_login.add_argument(
+        "--profile", default="default", help="NotebookLM profile name (default: default)"
+    )
+
+    notebooklm_status = notebooklm_subparsers.add_parser(
+        "status", help="Show NotebookLM install and login status"
+    )
+    notebooklm_status.add_argument(
+        "--json", action="store_true", help="Print machine-readable JSON output"
+    )
+    notebooklm_status.add_argument(
+        "--profile", default="default", help="NotebookLM profile name (default: default)"
+    )
+
+    notebooklm_parser.set_defaults(func=cmd_notebooklm)
+
+    # =========================================================================
     # gateway command
     # =========================================================================
     gateway_parser = subparsers.add_parser(
@@ -7065,6 +7117,64 @@ For more help on a command:
 
     # gateway setup
     gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
+
+    # gateway topic
+    gateway_topic = gateway_subparsers.add_parser(
+        "topic",
+        help="Manage exact chat/topic routing rules",
+        description="Manage exact topic routes such as telegram:<chat_id>:<thread_id>",
+    )
+    gateway_topic_subparsers = gateway_topic.add_subparsers(dest="topic_action")
+
+    gateway_topic_list = gateway_topic_subparsers.add_parser(
+        "list", help="List configured topic routes"
+    )
+    gateway_topic_list.add_argument(
+        "platform",
+        nargs="?",
+        default=None,
+        help="Optional platform filter (e.g. telegram)",
+    )
+    gateway_topic_list.add_argument(
+        "--json", action="store_true", help="Print machine-readable JSON output"
+    )
+
+    gateway_topic_bind = gateway_topic_subparsers.add_parser(
+        "bind", help="Bind an exact topic target to a route"
+    )
+    gateway_topic_bind.add_argument("target", help="Exact target, e.g. telegram:-100123:478")
+    gateway_topic_bind.add_argument("--label", default="", help="Human-friendly route label")
+    gateway_topic_bind.add_argument("--notebook", default="", help="NotebookLM notebook label/name")
+    gateway_topic_bind.add_argument(
+        "--profile",
+        default=os.getenv("NOTEBOOKLM_PROFILE", "default"),
+        help="NotebookLM profile name for notebook lookup (default: NOTEBOOKLM_PROFILE or default)",
+    )
+    gateway_topic_bind.add_argument(
+        "--free-response",
+        action="store_true",
+        help="Allow free-response mode for this exact target",
+    )
+
+    gateway_topic_unbind = gateway_topic_subparsers.add_parser(
+        "unbind", help="Remove a topic route binding"
+    )
+    gateway_topic_unbind.add_argument("target", help="Exact target, e.g. telegram:-100123:478")
+
+    gateway_topic_ignore = gateway_topic_subparsers.add_parser(
+        "ignore", help="Mark an exact topic target as ignored"
+    )
+    gateway_topic_ignore.add_argument("target", help="Exact target, e.g. telegram:-100123:478")
+
+    gateway_topic_unignore = gateway_topic_subparsers.add_parser(
+        "unignore", help="Remove the ignored flag from an exact topic target"
+    )
+    gateway_topic_unignore.add_argument("target", help="Exact target, e.g. telegram:-100123:478")
+
+    gateway_topic_test = gateway_topic_subparsers.add_parser(
+        "test", help="Show how a topic target would be routed"
+    )
+    gateway_topic_test.add_argument("target", help="Exact target, e.g. telegram:-100123:478")
 
     # gateway migrate-legacy
     gateway_migrate_legacy = gateway_subparsers.add_parser(

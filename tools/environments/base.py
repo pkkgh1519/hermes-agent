@@ -291,6 +291,8 @@ class BaseEnvironment(ABC):
         self.cwd = cwd
         self.timeout = timeout
         self.env = env or {}
+        self._command_env_overlay: dict[str, str] = {}
+        self._command_unset_env_keys: tuple[str, ...] = ()
 
         self._session_id = uuid.uuid4().hex[:12]
         temp_dir = self.get_temp_dir().rstrip("/") or "/"
@@ -378,6 +380,11 @@ class BaseEnvironment(ABC):
         # Source snapshot (env vars from previous commands)
         if self._snapshot_ready:
             parts.append(f"source {self._snapshot_path} 2>/dev/null || true")
+
+        for key in self._command_unset_env_keys:
+            parts.append(f"unset {key}")
+        for key, value in self._command_env_overlay.items():
+            parts.append(f"export {key}={shlex.quote(value)}")
 
         # cd to working directory — let bash expand ~ natively
         quoted_cwd = (

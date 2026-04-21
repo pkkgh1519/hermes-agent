@@ -398,6 +398,128 @@ class TestBuildSessionContextPrompt:
         assert "**User:** Alice" in prompt
         assert "Multi-user thread" not in prompt
 
+    def test_prompt_includes_exact_topic_route_and_notebook_binding(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1003586456169",
+            chat_name="AGI Jarvis",
+            chat_type="group",
+            thread_id="478",
+            route_target="telegram:-1003586456169:478",
+            route_label="NLM Lab",
+            route_mode="notebooklm",
+            route_notebook="NLM Lab / 제국 운영",
+            route_notebook_id="nb-478",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**Topic Route:** telegram:-1003586456169:478" in prompt
+        assert "**Route Label:** NLM Lab" in prompt
+        assert "**Route Mode:** notebooklm" in prompt
+        assert "**Bound Notebook:** NLM Lab / 제국 운영" in prompt
+        assert "**Bound Notebook ID:** nb-478" in prompt
+        assert "HERMES_NOTEBOOKLM_NOTEBOOK_ID=nb-478" in prompt
+        assert "Prefer the `notebooklm` tool" in prompt
+        assert "Only use `terminal` for NotebookLM setup, debugging, or CLI fallback" in prompt
+
+    def test_prompt_omits_notebooklm_tool_preference_for_non_notebooklm_route(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1003586456169",
+            chat_name="AGI Jarvis",
+            chat_type="group",
+            thread_id="478",
+            route_target="telegram:-1003586456169:478",
+            route_label="Ops",
+            route_mode="default",
+            route_notebook="NLM Lab / 제국 운영",
+            route_notebook_id="nb-478",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Prefer the `notebooklm` tool" not in prompt
+        assert "Only use `terminal` for NotebookLM setup, debugging, or CLI fallback" not in prompt
+
+    def test_redacted_prompt_hashes_route_target_for_pii_safe_platforms(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1003586456169",
+            chat_name="AGI Jarvis",
+            chat_type="group",
+            thread_id="478",
+            route_target="telegram:-1003586456169:478",
+            route_label="NLM Lab",
+            route_mode="notebooklm",
+            route_notebook="NLM Lab / 제국 운영",
+            route_notebook_id="nb-478",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx, redact_pii=True)
+
+        assert "**Topic Route:** telegram:-1003586456169:478" not in prompt
+        assert "-1003586456169" not in prompt
+        assert "**Topic Route:** telegram:" in prompt
+        assert ":478" in prompt
+
+
+class TestSessionStoreRouteRefresh:
+    def test_get_or_create_session_refreshes_origin_route_metadata(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = None
+        store._loaded = True
+
+        source1 = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1003586456169",
+            chat_name="AGI Jarvis",
+            chat_type="group",
+            thread_id="478",
+            route_target=None,
+            route_label=None,
+            route_mode=None,
+            route_notebook=None,
+            route_notebook_id=None,
+        )
+        entry1 = store.get_or_create_session(source1)
+
+        source2 = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1003586456169",
+            chat_name="AGI Jarvis",
+            chat_type="group",
+            thread_id="478",
+            route_target="telegram:-1003586456169:478",
+            route_label="NLM Lab",
+            route_mode="notebooklm",
+            route_notebook="NLM Lab / 제국 운영",
+            route_notebook_id="nb-478",
+        )
+        entry2 = store.get_or_create_session(source2)
+
+        assert entry2.session_id == entry1.session_id
+        assert entry2.origin.route_target == "telegram:-1003586456169:478"
+        assert entry2.origin.route_notebook == "NLM Lab / 제국 운영"
+        assert entry2.origin.route_notebook_id == "nb-478"
+
 
 class TestSessionStoreRewriteTranscript:
     """Regression: /retry and /undo must persist truncated history to disk."""

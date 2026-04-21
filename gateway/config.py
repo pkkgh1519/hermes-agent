@@ -560,7 +560,7 @@ def load_gateway_config() -> GatewayConfig:
                     continue
                 platform_cfg = yaml_cfg.get(plat.value)
                 if not isinstance(platform_cfg, dict):
-                    continue
+                    platform_cfg = {}
                 # Collect bridgeable keys from this platform section
                 bridged = {}
                 if "unauthorized_dm_behavior" in platform_cfg:
@@ -584,6 +584,18 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_policy"] = platform_cfg["group_policy"]
                 if "group_allow_from" in platform_cfg:
                     bridged["group_allow_from"] = platform_cfg["group_allow_from"]
+                if "free_response_threads" in platform_cfg:
+                    bridged["free_response_threads"] = platform_cfg["free_response_threads"]
+                if plat == Platform.TELEGRAM:
+                    gateway_cfg = yaml_cfg.get("gateway", {})
+                    if isinstance(gateway_cfg, dict):
+                        topic_routes_cfg = gateway_cfg.get("topic_routes", {})
+                        if isinstance(topic_routes_cfg, dict):
+                            telegram_topic_routes = topic_routes_cfg.get("telegram")
+                            if isinstance(telegram_topic_routes, dict):
+                                bridged["topic_routes"] = {
+                                    str(k): v for k, v in telegram_topic_routes.items()
+                                }
                 if plat == Platform.DISCORD and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
                 if "channel_prompts" in platform_cfg:
@@ -678,6 +690,11 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["TELEGRAM_FREE_RESPONSE_CHATS"] = str(frc)
+                frt = telegram_cfg.get("free_response_threads")
+                if frt is not None and not os.getenv("TELEGRAM_FREE_RESPONSE_THREADS"):
+                    if isinstance(frt, list):
+                        frt = ",".join(str(v) for v in frt)
+                    os.environ["TELEGRAM_FREE_RESPONSE_THREADS"] = str(frt)
                 ignored_threads = telegram_cfg.get("ignored_threads")
                 if ignored_threads is not None and not os.getenv("TELEGRAM_IGNORED_THREADS"):
                     if isinstance(ignored_threads, list):

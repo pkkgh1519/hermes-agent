@@ -32,6 +32,11 @@ class TestGetToolset:
         assert ts is not None
         assert "web_search" in ts["tools"]
 
+    def test_notebooklm_toolset_exists(self):
+        ts = get_toolset("notebooklm")
+        assert ts is not None
+        assert ts["tools"] == ["notebooklm"]
+
     def test_unknown_returns_none(self):
         assert get_toolset("nonexistent") is None
 

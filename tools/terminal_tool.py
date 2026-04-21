@@ -1322,7 +1322,7 @@ def _command_requires_pipe_stdin(command: str) -> bool:
     waits for EOF; when we launch it under a PTY, `process.submit()` only sends a
     newline, so the command appears to hang forever with no visible progress.
     """
-    normalized = " ".join(command.lower().split())
+    normalized = " ".join((command or "").lower().split())
     return (
         normalized.startswith("gh auth login")
         and "--with-token" in normalized
@@ -1386,6 +1386,67 @@ def _foreground_background_guidance(command: str) -> str | None:
             )
 
     return None
+
+
+_GATEWAY_SESSION_ENV_KEYS = (
+    "HERMES_SESSION_PLATFORM",
+    "HERMES_SESSION_CHAT_ID",
+    "HERMES_SESSION_CHAT_NAME",
+    "HERMES_SESSION_THREAD_ID",
+    "HERMES_SESSION_USER_ID",
+    "HERMES_SESSION_USER_NAME",
+    "HERMES_SESSION_KEY",
+    "HERMES_SESSION_ROUTE_TARGET",
+    "HERMES_SESSION_ROUTE_LABEL",
+    "HERMES_SESSION_ROUTE_MODE",
+    "HERMES_SESSION_ROUTE_NOTEBOOK",
+    "HERMES_SESSION_ROUTE_NOTEBOOK_ID",
+    "HERMES_NOTEBOOKLM_NOTEBOOK",
+    "HERMES_NOTEBOOKLM_NOTEBOOK_ID",
+)
+
+
+def _gateway_session_env_exports() -> dict[str, str]:
+    """Return shell-visible env vars derived from gateway session contextvars."""
+    try:
+        from gateway.session_context import get_session_env as _gse
+    except Exception:
+        return {}
+
+    exported = {
+        "HERMES_SESSION_PLATFORM": _gse("HERMES_SESSION_PLATFORM", ""),
+        "HERMES_SESSION_CHAT_ID": _gse("HERMES_SESSION_CHAT_ID", ""),
+        "HERMES_SESSION_CHAT_NAME": _gse("HERMES_SESSION_CHAT_NAME", ""),
+        "HERMES_SESSION_THREAD_ID": _gse("HERMES_SESSION_THREAD_ID", ""),
+        "HERMES_SESSION_USER_ID": _gse("HERMES_SESSION_USER_ID", ""),
+        "HERMES_SESSION_USER_NAME": _gse("HERMES_SESSION_USER_NAME", ""),
+        "HERMES_SESSION_KEY": _gse("HERMES_SESSION_KEY", ""),
+        "HERMES_SESSION_ROUTE_TARGET": _gse("HERMES_SESSION_ROUTE_TARGET", ""),
+        "HERMES_SESSION_ROUTE_LABEL": _gse("HERMES_SESSION_ROUTE_LABEL", ""),
+        "HERMES_SESSION_ROUTE_MODE": _gse("HERMES_SESSION_ROUTE_MODE", ""),
+        "HERMES_SESSION_ROUTE_NOTEBOOK": _gse("HERMES_SESSION_ROUTE_NOTEBOOK", ""),
+        "HERMES_SESSION_ROUTE_NOTEBOOK_ID": _gse("HERMES_SESSION_ROUTE_NOTEBOOK_ID", ""),
+    }
+    exported["HERMES_NOTEBOOKLM_NOTEBOOK"] = exported["HERMES_SESSION_ROUTE_NOTEBOOK"]
+    exported["HERMES_NOTEBOOKLM_NOTEBOOK_ID"] = exported["HERMES_SESSION_ROUTE_NOTEBOOK_ID"]
+    return {key: value for key, value in exported.items() if value}
+
+
+
+def _apply_gateway_session_env(env_obj) -> None:
+    """Project gateway session contextvars into a backend environment object."""
+    if not hasattr(env_obj, "env") or not isinstance(getattr(env_obj, "env", None), dict):
+        return
+    exported = _gateway_session_env_exports()
+    env_obj._command_env_overlay = dict(exported)
+    env_obj._command_unset_env_keys = tuple(
+        key for key in _GATEWAY_SESSION_ENV_KEYS if key not in exported
+    )
+    for key in _GATEWAY_SESSION_ENV_KEYS:
+        if key in exported:
+            env_obj.env[key] = exported[key]
+        else:
+            env_obj.env.pop(key, None)
 
 
 def terminal_tool(
@@ -1581,6 +1642,8 @@ def terminal_tool(
                         _last_activity[effective_task_id] = time.time()
                         env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
+
+        _apply_gateway_session_env(env)
 
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)

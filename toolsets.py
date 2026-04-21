@@ -31,6 +31,8 @@ from typing import List, Dict, Any, Set, Optional
 _HERMES_CORE_TOOLS = [
     # Web
     "web_search", "web_extract",
+    # NotebookLM
+    "notebooklm",
     # Terminal + process management
     "terminal", "process",
     # File manipulation
@@ -94,6 +96,12 @@ TOOLSETS = {
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],
+        "includes": []
+    },
+
+    "notebooklm": {
+        "description": "NotebookLM notebook access with route-aware defaults for bound gateway topics",
+        "tools": ["notebooklm"],
         "includes": []
     },
     

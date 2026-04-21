@@ -54,6 +54,16 @@ def _hash_chat_id(value: str) -> str:
     return _hash_id(value)
 
 
+
+def _redact_route_target(value: str) -> str:
+    """Hash the chat_id portion of a route target while preserving platform/thread."""
+    parts = value.split(":", 2)
+    if len(parts) == 3 and parts[0] and parts[1] and parts[2]:
+        platform, chat_id, thread_id = parts
+        return f"{platform}:{_hash_id(chat_id)}:{thread_id}"
+    return _hash_chat_id(value)
+
+
 from .config import (
     Platform,
     GatewayConfig,
@@ -80,6 +90,11 @@ class SessionSource:
     user_name: Optional[str] = None
     thread_id: Optional[str] = None  # For forum topics, Discord threads, etc.
     chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
+    route_target: Optional[str] = None  # Exact route key (e.g. telegram:<chat_id>:<thread_id>)
+    route_label: Optional[str] = None  # Human-friendly route label
+    route_mode: Optional[str] = None  # Route mode (e.g. notebooklm)
+    route_notebook: Optional[str] = None  # Bound notebook or project label
+    route_notebook_id: Optional[str] = None  # Bound notebook ID when validated
     user_id_alt: Optional[str] = None  # Platform-specific stable alt ID (Signal UUID, Feishu union_id)
     chat_id_alt: Optional[str] = None  # Signal group internal ID
     is_bot: bool = False  # True when the message author is a bot/webhook (Discord)
@@ -115,6 +130,11 @@ class SessionSource:
             "user_name": self.user_name,
             "thread_id": self.thread_id,
             "chat_topic": self.chat_topic,
+            "route_target": self.route_target,
+            "route_label": self.route_label,
+            "route_mode": self.route_mode,
+            "route_notebook": self.route_notebook,
+            "route_notebook_id": self.route_notebook_id,
         }
         if self.user_id_alt:
             d["user_id_alt"] = self.user_id_alt
@@ -133,6 +153,11 @@ class SessionSource:
             user_name=data.get("user_name"),
             thread_id=data.get("thread_id"),
             chat_topic=data.get("chat_topic"),
+            route_target=data.get("route_target"),
+            route_label=data.get("route_label"),
+            route_mode=data.get("route_mode"),
+            route_notebook=data.get("route_notebook"),
+            route_notebook_id=data.get("route_notebook_id"),
             user_id_alt=data.get("user_id_alt"),
             chat_id_alt=data.get("chat_id_alt"),
         )
@@ -240,6 +265,34 @@ def build_session_context_prompt(
     # Channel topic (if available - provides context about the channel's purpose)
     if context.source.chat_topic:
         lines.append(f"**Channel Topic:** {context.source.chat_topic}")
+
+    if context.source.route_target:
+        route_target = context.source.route_target
+        if redact_pii:
+            route_target = _redact_route_target(route_target)
+        lines.append(f"**Topic Route:** {route_target}")
+    if context.source.route_label:
+        lines.append(f"**Route Label:** {context.source.route_label}")
+    if context.source.route_mode:
+        lines.append(f"**Route Mode:** {context.source.route_mode}")
+    if context.source.route_notebook:
+        lines.append(f"**Bound Notebook:** {context.source.route_notebook}")
+    if context.source.route_notebook_id:
+        lines.append(f"**Bound Notebook ID:** {context.source.route_notebook_id}")
+        lines.append(
+            f"**NotebookLM shell env:** `HERMES_NOTEBOOKLM_NOTEBOOK_ID={context.source.route_notebook_id}`"
+        )
+    elif context.source.route_notebook:
+        lines.append(
+            f"**NotebookLM shell env:** `HERMES_NOTEBOOKLM_NOTEBOOK={context.source.route_notebook}`"
+        )
+
+    if (context.source.route_mode or "").strip().lower() == "notebooklm":
+        lines.append(
+            "**NotebookLM tool preference:** Prefer the `notebooklm` tool for notebook questions in this topic. "
+            "It defaults to the bound notebook automatically. Only use `terminal` for NotebookLM setup, "
+            "debugging, or CLI fallback."
+        )
 
     # User identity.
     # In shared multi-user sessions (shared threads OR shared non-thread groups
@@ -782,6 +835,10 @@ class SessionStore:
                     reset_reason = self._should_reset(entry, source)
                 if not reset_reason:
                     entry.updated_at = now
+                    entry.origin = source
+                    entry.display_name = source.chat_name
+                    entry.platform = source.platform
+                    entry.chat_type = source.chat_type
                     self._save()
                     return entry
                 else:

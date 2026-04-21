@@ -721,6 +721,14 @@ class MessageEvent:
     # Per-channel ephemeral system prompt (e.g. Discord channel_prompts).
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
+
+    # Exact route metadata (e.g. telegram:<chat_id>:<thread_id> bindings for
+    # project/topic-specific workflows like NotebookLM notebooks).
+    route_target: Optional[str] = None
+    route_label: Optional[str] = None
+    route_mode: Optional[str] = None
+    route_notebook: Optional[str] = None
+    route_notebook_id: Optional[str] = None
     
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
@@ -2437,6 +2445,11 @@ class BasePlatformAdapter(ABC):
         user_name: Optional[str] = None,
         thread_id: Optional[str] = None,
         chat_topic: Optional[str] = None,
+        route_target: Optional[str] = None,
+        route_label: Optional[str] = None,
+        route_mode: Optional[str] = None,
+        route_notebook: Optional[str] = None,
+        route_notebook_id: Optional[str] = None,
         user_id_alt: Optional[str] = None,
         chat_id_alt: Optional[str] = None,
         is_bot: bool = False,
@@ -2454,6 +2467,11 @@ class BasePlatformAdapter(ABC):
             user_name=user_name,
             thread_id=str(thread_id) if thread_id else None,
             chat_topic=chat_topic.strip() if chat_topic else None,
+            route_target=route_target,
+            route_label=route_label,
+            route_mode=route_mode,
+            route_notebook=route_notebook,
+            route_notebook_id=route_notebook_id,
             user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt,
             is_bot=is_bot,

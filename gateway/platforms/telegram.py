@@ -2223,6 +2223,71 @@ class TelegramAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    def _telegram_topic_routes(self) -> dict[str, dict]:
+        raw = self.config.extra.get("topic_routes")
+        if not isinstance(raw, dict):
+            return {}
+
+        normalized: dict[str, dict] = {}
+        for key, value in raw.items():
+            route_key = str(key).strip()
+            if not route_key:
+                continue
+            if not isinstance(value, dict):
+                logger.warning("[%s] Ignoring invalid Telegram topic route payload for %r", self.name, key)
+                continue
+            parts = route_key.split(":", 1)
+            if len(parts) != 2:
+                logger.warning("[%s] Ignoring invalid Telegram topic route key: %r", self.name, key)
+                continue
+            chat_id, thread_id = (part.strip() for part in parts)
+            try:
+                normalized_key = f"{chat_id}:{int(thread_id)}"
+            except (TypeError, ValueError):
+                logger.warning("[%s] Ignoring non-numeric Telegram topic route key: %r", self.name, key)
+                continue
+            normalized[normalized_key] = value
+        return normalized
+
+    def _telegram_exact_topic_route(self, message: Message) -> Optional[dict]:
+        chat_id = str(getattr(getattr(message, "chat", None), "id", "")).strip()
+        if not chat_id:
+            return None
+
+        thread_id = getattr(message, "message_thread_id", None)
+        if thread_id is None and getattr(getattr(message, "chat", None), "is_forum", False):
+            thread_id = self._GENERAL_TOPIC_THREAD_ID
+        if thread_id is None:
+            return None
+
+        try:
+            route_key = f"{chat_id}:{int(thread_id)}"
+        except (TypeError, ValueError):
+            logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
+            return None
+        return self._telegram_topic_routes().get(route_key)
+
+    def _telegram_free_response_threads(self) -> set[int]:
+        raw = self.config.extra.get("free_response_threads")
+        if raw is None:
+            raw = os.getenv("TELEGRAM_FREE_RESPONSE_THREADS", "")
+
+        if isinstance(raw, list):
+            values = raw
+        else:
+            values = str(raw).split(",")
+
+        allowed: set[int] = set()
+        for value in values:
+            text = str(value).strip()
+            if not text:
+                continue
+            try:
+                allowed.add(int(text))
+            except ValueError:
+                logger.warning("[%s] Ignoring non-numeric free_response_threads entry: %r", self.name, value)
+        return allowed
+
     def _telegram_ignored_threads(self) -> set[int]:
         raw = self.config.extra.get("ignored_threads")
         if raw is None:
@@ -2366,9 +2431,18 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._is_group_chat(message):
             return True
+        exact_route = self._telegram_exact_topic_route(message)
+        exact_route_matched = exact_route is not None
+        if exact_route_matched:
+            if exact_route.get("ignored"):
+                return False
+            if exact_route.get("free_response"):
+                return True
         thread_id = getattr(message, "message_thread_id", None)
-        if thread_id is not None:
+        if thread_id is not None and not exact_route_matched:
             try:
+                if int(thread_id) in self._telegram_free_response_threads():
+                    return True
                 if int(thread_id) in self._telegram_ignored_threads():
                     return False
             except (TypeError, ValueError):
@@ -3021,6 +3095,19 @@ class TelegramAdapter(BasePlatformAdapter):
                     break
 
         # Build source
+        _exact_route = self._telegram_exact_topic_route(message)
+        _route_target = None
+        _route_label = None
+        _route_mode = None
+        _route_notebook = None
+        _route_notebook_id = None
+        if _exact_route is not None and thread_id_str is not None:
+            _route_target = f"telegram:{chat.id}:{thread_id_str}"
+            _route_label = _exact_route.get("label")
+            _route_mode = _exact_route.get("mode")
+            _route_notebook = _exact_route.get("notebook")
+            _route_notebook_id = _exact_route.get("notebook_id")
+
         source = self.build_source(
             chat_id=str(chat.id),
             chat_name=chat.title or (chat.full_name if hasattr(chat, "full_name") else None),
@@ -3029,6 +3116,11 @@ class TelegramAdapter(BasePlatformAdapter):
             user_name=user.full_name if user else (chat.full_name if hasattr(chat, "full_name") and chat_type == "dm" else None),
             thread_id=thread_id_str,
             chat_topic=chat_topic,
+            route_target=_route_target,
+            route_label=_route_label,
+            route_mode=_route_mode,
+            route_notebook=_route_notebook,
+            route_notebook_id=_route_notebook_id,
         )
         
         # Extract reply context if this message is a reply
@@ -3058,6 +3150,11 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
+            route_target=source.route_target,
+            route_label=source.route_label,
+            route_mode=source.route_mode,
+            route_notebook=source.route_notebook,
+            route_notebook_id=source.route_notebook_id,
             timestamp=message.date,
         )
 

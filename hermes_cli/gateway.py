@@ -3894,6 +3894,12 @@ def _gateway_command_inner(args):
         gateway_setup()
         return
 
+    if subcmd == "topic":
+        from hermes_cli.gateway_topic import topic_command
+
+        topic_command(args)
+        return
+
     # Service management commands
     if subcmd == "install":
         if is_managed():
