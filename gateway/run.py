@@ -101,6 +101,7 @@ load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve(
 
 _DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
 _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
+_PPT_DRAFT_PHOTO_TAG_RE = re.compile(r"\b(offer_[A-Za-z0-9_-]+)\b", re.IGNORECASE)
 
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.
@@ -288,7 +289,14 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    get_document_cache_dir,
+    get_image_cache_dir,
     merge_pending_message_event,
+)
+from gateway.ppt_draft_state import (
+    add_photo_batch,
+    get_session_draft_intake,
+    set_latest_csv,
 )
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -1046,6 +1054,94 @@ class GatewayRunner:
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
+
+    def _path_is_within_root(self, path_str: str, root: Path) -> bool:
+        """Return True when *path_str* resolves under *root*."""
+        try:
+            resolved_path = Path(path_str).expanduser().resolve()
+            resolved_root = root.expanduser().resolve()
+            resolved_path.relative_to(resolved_root)
+            return True
+        except Exception:
+            return False
+
+    def _extract_ppt_draft_photo_tag(self, text: str | None) -> str | None:
+        if not text:
+            return None
+        match = _PPT_DRAFT_PHOTO_TAG_RE.search(text)
+        if not match:
+            return None
+        return match.group(1).strip()
+
+    def _record_ppt_draft_intake(self, event: MessageEvent, source: SessionSource) -> None:
+        """Capture draft-generation CSV/photo uploads for the current session."""
+        if not getattr(event, "media_urls", None):
+            return
+
+        session_key = self._session_key_for_source(source)
+
+        if event.message_type == MessageType.DOCUMENT:
+            document_root = get_document_cache_dir()
+            for i, path in enumerate(event.media_urls):
+                mime_type = event.media_types[i] if i < len(event.media_types) else ""
+                basename = os.path.basename(path)
+                if not basename.lower().endswith("offers.csv"):
+                    continue
+                if not self._path_is_within_root(path, document_root):
+                    continue
+                if mime_type and not mime_type.startswith(("text/", "application/")):
+                    continue
+                set_latest_csv(
+                    session_key,
+                    path=path,
+                    filename=basename,
+                    message_id=event.message_id,
+                )
+                break
+
+        photo_tag = self._extract_ppt_draft_photo_tag(event.text)
+        if not photo_tag:
+            return
+
+        image_root = get_image_cache_dir()
+        image_paths: list[str] = []
+        for i, path in enumerate(event.media_urls):
+            mime_type = event.media_types[i] if i < len(event.media_types) else ""
+            is_image = mime_type.startswith("image/") or event.message_type == MessageType.PHOTO
+            if not is_image:
+                continue
+            if not self._path_is_within_root(path, image_root):
+                continue
+            image_paths.append(path)
+
+        if image_paths:
+            add_photo_batch(
+                session_key,
+                tag=photo_tag,
+                image_paths=image_paths,
+                message_id=event.message_id,
+            )
+
+    def _build_ppt_draft_intake_summary(self, source: SessionSource) -> str | None:
+        """Return a compact summary of current draft-generation intake state."""
+        intake = get_session_draft_intake(self._session_key_for_source(source))
+        if intake is None:
+            return None
+
+        csv_name = intake.latest_csv.filename if intake.latest_csv else None
+        tag_counts: OrderedDict[str, int] = OrderedDict()
+        for batch in intake.photo_batches:
+            tag_counts.setdefault(batch.tag, 0)
+            tag_counts[batch.tag] += len(batch.image_paths)
+
+        parts: list[str] = []
+        parts.append(f"csv={csv_name}" if csv_name else "csv=none")
+        if tag_counts:
+            tags = ", ".join(f"{tag}({count})" for tag, count in tag_counts.items())
+            parts.append(f"tags=[{tags}]")
+        else:
+            parts.append("tags=[]")
+        return "Draft intake: " + ", ".join(parts)
 
     def _resolve_session_agent_runtime(
         self,
@@ -3896,6 +3992,7 @@ class GatewayRunner:
         """
         history = history or []
         message_text = event.text or ""
+        self._record_ppt_draft_intake(event, source)
 
         _is_shared_multi_user = is_shared_multi_user_session(
             source,
@@ -4031,6 +4128,10 @@ class GatewayRunner:
                     message_text = _ctx_result.message
             except Exception as exc:
                 logger.debug("@ context reference expansion failed: %s", exc)
+
+        draft_summary = self._build_ppt_draft_intake_summary(source)
+        if draft_summary:
+            message_text = f"[{draft_summary}]\n\n{message_text}"
 
         return message_text
 

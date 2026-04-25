@@ -33,6 +33,8 @@ _HERMES_CORE_TOOLS = [
     "web_search", "web_extract",
     # NotebookLM
     "notebooklm",
+    # PPT draft generation from session CSV/photo intake
+    "ppt_draft",
     # Terminal + process management
     "terminal", "process",
     # File manipulation
@@ -102,6 +104,12 @@ TOOLSETS = {
     "notebooklm": {
         "description": "NotebookLM notebook access with route-aware defaults for bound gateway topics",
         "tools": ["notebooklm"],
+        "includes": []
+    },
+
+    "ppt_draft": {
+        "description": "Build a draft PPTX from the current session's uploaded offers.csv and tagged photo batches",
+        "tools": ["ppt_draft"],
         "includes": []
     },
     
