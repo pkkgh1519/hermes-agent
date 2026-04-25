@@ -127,6 +127,7 @@ def notebooklm_tool(
     source_type: str | None = None,
     content: str | None = None,
     profile: str = "default",
+    mime_type: str | None = None,
 ) -> str:
     action = (action or "status").strip().lower()
     bound = _get_bound_notebook()
@@ -207,6 +208,7 @@ def notebooklm_tool(
                 source_type=source_type,
                 content=content,
                 profile=profile,
+                mime_type=mime_type,
             )
             return _tool_result_with_notebook_context(resolved, payload)
 
@@ -265,12 +267,16 @@ NOTEBOOKLM_SCHEMA = {
             },
             "source_type": {
                 "type": "string",
-                "enum": ["url", "text"],
-                "description": "Source type to add when action='source_add'.",
+                "enum": ["url", "text", "file"],
+                "description": "Source type to add when action='source_add'. Use 'file' for local cached document paths.",
             },
             "content": {
                 "type": "string",
-                "description": "URL or raw text content to add when action='source_add'.",
+                "description": "URL, raw text, or local file path to add when action='source_add'.",
+            },
+            "mime_type": {
+                "type": "string",
+                "description": "Optional MIME type for file uploads when action='source_add' and source_type='file'.",
             },
             "profile": {
                 "type": "string",
@@ -295,6 +301,7 @@ registry.register(
         source_type=args.get("source_type"),
         content=args.get("content"),
         profile=args.get("profile", "default"),
+        mime_type=args.get("mime_type"),
     ),
     check_fn=check_notebooklm_requirements,
     emoji="📚",

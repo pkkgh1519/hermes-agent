@@ -321,11 +321,127 @@ def list_sources(*, notebook_id: str, profile: str = "default") -> list[dict]:
 
 
 
-def add_source(*, notebook_id: str, source_type: str, content: str, profile: str = "default") -> dict:
-    if source_type not in {"url", "text"}:
-        raise ValueError("source_type must be one of: url, text")
+def _message_platform_names() -> set[str]:
+    return {
+        "telegram",
+        "discord",
+        "slack",
+        "whatsapp",
+        "signal",
+        "mattermost",
+        "matrix",
+        "homeassistant",
+        "email",
+        "sms",
+        "dingtalk",
+        "feishu",
+        "wecom",
+        "weixin",
+        "bluebubbles",
+        "qqbot",
+    }
+
+
+
+def _session_platform_name() -> str:
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return ""
+    return (get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip().lower()
+
+
+
+def _document_cache_root() -> Path:
+    hermes_home = Path(os.getenv("HERMES_HOME", "~/.hermes")).expanduser()
+    return hermes_home / "cache" / "documents"
+
+
+
+def _trusted_cwd() -> Path:
+    cwd = Path.cwd()
+    pwd = (os.getenv("PWD") or "").strip()
+    if not pwd:
+        return cwd
+    try:
+        pwd_path = Path(pwd).expanduser()
+        if pwd_path.resolve() == cwd.resolve():
+            return pwd_path
+    except OSError:
+        pass
+    return cwd
+
+
+
+def _allowed_file_roots_for_source_add() -> list[Path]:
+    document_root = _document_cache_root()
+    if _session_platform_name() in _message_platform_names():
+        return [document_root]
+    return [_trusted_cwd(), document_root]
+
+
+
+def _path_within_root(candidate: Path, root: Path) -> bool:
+    try:
+        candidate.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+
+def _validate_source_file_path(raw_path: str) -> Path:
+    candidate = Path(raw_path.strip()).expanduser()
+    if not candidate.is_absolute():
+        candidate = _trusted_cwd() / candidate
+    candidate = Path(os.path.normpath(str(candidate)))
+
+    try:
+        resolved_candidate = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError("file content must reference an existing local file") from exc
+
+    if not resolved_candidate.is_file():
+        raise ValueError("file content must reference an existing local file")
+
+    roots = _allowed_file_roots_for_source_add()
+    allowed = False
+    for root in roots:
+        lexical_root = Path(os.path.normpath(str(root.expanduser())))
+        resolved_root = root.expanduser().resolve()
+        if _path_within_root(candidate, lexical_root) and _path_within_root(resolved_candidate, resolved_root):
+            allowed = True
+            break
+    if not allowed:
+        raise ValueError("file content must stay within the allowed roots")
+
+    if _session_platform_name() in _message_platform_names():
+        document_root = _document_cache_root().expanduser().resolve()
+        if _path_within_root(resolved_candidate, document_root):
+            try:
+                if resolved_candidate.stat().st_nlink > 1:
+                    raise ValueError("file content must not be hard-linked in message-platform sessions")
+            except OSError as exc:
+                raise ValueError("file content must reference an existing local file") from exc
+
+    return resolved_candidate
+
+
+
+def add_source(
+    *,
+    notebook_id: str,
+    source_type: str,
+    content: str,
+    profile: str = "default",
+    mime_type: str | None = None,
+) -> dict:
+    if source_type not in {"url", "text", "file"}:
+        raise ValueError("source_type must be one of: url, text, file")
     if not content.strip():
         raise ValueError("content must not be empty")
+    if mime_type and source_type != "file":
+        raise ValueError("mime_type is only supported for file sources")
     if source_type == "url" and content.startswith("-"):
         raise ValueError("url content must not start with '-'")
 
@@ -337,14 +453,27 @@ def add_source(*, notebook_id: str, source_type: str, content: str, profile: str
             temp_file.flush()
             temp_path = temp_file.name
             content_arg = temp_path
+    elif source_type == "file":
+        content_arg = str(_validate_source_file_path(content))
 
     try:
-        args = ["source", "add", content_arg, "--notebook", notebook_id, "--json"]
+        args = ["source", "add", content_arg]
+        if source_type == "file":
+            args.extend(["--type", "file"])
+        args.extend(["--notebook", notebook_id])
+        if mime_type:
+            args.extend(["--mime-type", mime_type])
+        args.append("--json")
         try:
             payload = _run_cli_json(args, profile=profile)
         except NotebookCommandError as exc:
             if _looks_like_missing_option_error(str(exc), "--notebook"):
-                fallback_args = ["source", "add", content_arg, "--json"]
+                fallback_args = ["source", "add", content_arg]
+                if source_type == "file":
+                    fallback_args.extend(["--type", "file"])
+                if mime_type:
+                    fallback_args.extend(["--mime-type", mime_type])
+                fallback_args.append("--json")
                 with _stateful_notebook_context():
                     _run_cli_capture(["use", notebook_id], profile=profile)
                     payload = _run_cli_json(fallback_args, profile=profile)
@@ -360,6 +489,7 @@ def add_source(*, notebook_id: str, source_type: str, content: str, profile: str
     if not isinstance(payload, dict):
         raise NotebookCommandError("NotebookLM source add output did not return an object")
     return payload
+
 
 
 

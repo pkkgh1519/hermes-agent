@@ -336,8 +336,8 @@ def test_source_add_uses_bound_notebook(monkeypatch):
     monkeypatch.setattr(
         notebooklm_tool_mod,
         "add_source",
-        lambda notebook_id=None, source_type=None, content=None, profile="default": {
-            "source": {"id": "src-1", "title": content, "type": source_type}
+        lambda notebook_id=None, source_type=None, content=None, profile="default", mime_type=None: {
+            "source": {"id": "src-1", "title": content, "type": source_type, "mime_type": mime_type}
         },
     )
 
@@ -358,7 +358,86 @@ def test_source_add_uses_bound_notebook(monkeypatch):
         "id": "src-1",
         "title": "https://example.com",
         "type": "url",
+        "mime_type": None,
     }
+
+
+
+def test_source_add_supports_file_for_bound_notebook(monkeypatch, tmp_path):
+    import tools.notebooklm_tool as notebooklm_tool_mod
+
+    recorded = {}
+    file_path = tmp_path / "report.pdf"
+    file_path.write_bytes(b"%PDF-test")
+
+    def fake_add_source(notebook_id=None, source_type=None, content=None, profile="default", mime_type=None):
+        recorded["notebook_id"] = notebook_id
+        recorded["source_type"] = source_type
+        recorded["content"] = content
+        recorded["profile"] = profile
+        recorded["mime_type"] = mime_type
+        return {"source": {"id": "src-1", "title": content, "type": source_type}}
+
+    monkeypatch.setattr(notebooklm_tool_mod, "add_source", fake_add_source)
+
+    tokens = _set_bound_notebook_context()
+    try:
+        payload = json.loads(
+            notebooklm_tool_mod.notebooklm_tool(
+                action="source_add",
+                source_type="file",
+                content=str(file_path),
+                mime_type="application/pdf",
+            )
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert recorded == {
+        "notebook_id": "nb-478",
+        "source_type": "file",
+        "content": str(file_path),
+        "profile": "default",
+        "mime_type": "application/pdf",
+    }
+    assert payload["notebook_id"] == "nb-478"
+    assert payload["source"] == {
+        "id": "src-1",
+        "title": str(file_path),
+        "type": "file",
+    }
+
+
+
+def test_source_add_rejects_non_cache_file_for_telegram_session(tmp_path, monkeypatch):
+    import tools.notebooklm_tool as notebooklm_tool_mod
+
+    outside_path = tmp_path / "outside.pdf"
+    outside_path.write_bytes(b"%PDF-test")
+
+    tokens = _set_bound_notebook_context()
+    try:
+        payload = json.loads(
+            notebooklm_tool_mod.notebooklm_tool(
+                action="source_add",
+                source_type="file",
+                content=str(outside_path),
+            )
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert "allowed roots" in payload["error"]
+
+
+
+def test_notebooklm_schema_exposes_file_source_and_mime_type():
+    import tools.notebooklm_tool as notebooklm_tool_mod
+
+    properties = notebooklm_tool_mod.NOTEBOOKLM_SCHEMA["parameters"]["properties"]
+
+    assert properties["source_type"]["enum"] == ["url", "text", "file"]
+    assert properties["mime_type"]["type"] == "string"
 
 
 

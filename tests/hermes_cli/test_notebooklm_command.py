@@ -587,3 +587,283 @@ def test_add_source_rejects_whitespace_only_content(monkeypatch):
             source_type="text",
             content="   ",
         )
+
+
+
+def test_add_source_file_builds_expected_command(monkeypatch, tmp_path):
+    import hermes_cli.notebooklm as notebooklm_mod
+
+    recorded = {}
+    file_path = tmp_path / "report.pdf"
+    file_path.write_bytes(b"%PDF-test")
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run_cli_json(args, *, profile="default"):
+        recorded["args"] = args
+        recorded["profile"] = profile
+        return {"source": {"id": "src-1"}}
+
+    monkeypatch.setattr(notebooklm_mod, "_run_cli_json", fake_run_cli_json)
+
+    payload = notebooklm_mod.add_source(
+        notebook_id="nb-478",
+        source_type="file",
+        content=str(file_path),
+    )
+
+    assert recorded == {
+        "args": [
+            "source",
+            "add",
+            str(file_path.resolve()),
+            "--type",
+            "file",
+            "--notebook",
+            "nb-478",
+            "--json",
+        ],
+        "profile": "default",
+    }
+    assert payload == {"source": {"id": "src-1"}}
+
+
+
+def test_add_source_file_includes_mime_type_when_provided(monkeypatch, tmp_path):
+    import hermes_cli.notebooklm as notebooklm_mod
+
+    recorded = {}
+    file_path = tmp_path / "report.pdf"
+    file_path.write_bytes(b"%PDF-test")
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run_cli_json(args, *, profile="default"):
+        recorded["args"] = args
+        return {"source": {"id": "src-1"}}
+
+    monkeypatch.setattr(notebooklm_mod, "_run_cli_json", fake_run_cli_json)
+
+    notebooklm_mod.add_source(
+        notebook_id="nb-478",
+        source_type="file",
+        content=str(file_path),
+        mime_type="application/pdf",
+    )
+
+    assert recorded["args"] == [
+        "source",
+        "add",
+        str(file_path.resolve()),
+        "--type",
+        "file",
+        "--notebook",
+        "nb-478",
+        "--mime-type",
+        "application/pdf",
+        "--json",
+    ]
+
+
+
+def test_add_source_rejects_mime_type_for_non_file_sources(monkeypatch):
+    import hermes_cli.notebooklm as notebooklm_mod
+
+    monkeypatch.setattr(
+        notebooklm_mod,
+        "_run_cli_json",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run cli")),
+    )
+
+    with pytest.raises(ValueError, match="mime_type is only supported for file sources"):
+        notebooklm_mod.add_source(
+            notebook_id="nb-478",
+            source_type="url",
+            content="https://example.com",
+            mime_type="application/pdf",
+        )
+
+
+
+def test_add_source_file_rejects_missing_local_file(monkeypatch, tmp_path):
+    import hermes_cli.notebooklm as notebooklm_mod
+
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ValueError, match="existing local file"):
+        notebooklm_mod.add_source(
+            notebook_id="nb-478",
+            source_type="file",
+            content=str(tmp_path / "missing.pdf"),
+        )
+
+
+
+def test_add_source_file_rejects_directory(monkeypatch, tmp_path):
+    import hermes_cli.notebooklm as notebooklm_mod
+
+    directory_path = tmp_path / "docs"
+    directory_path.mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ValueError, match="existing local file"):
+        notebooklm_mod.add_source(
+            notebook_id="nb-478",
+            source_type="file",
+            content=str(directory_path),
+        )
+
+
+
+def test_add_source_file_rejects_broken_symlink(monkeypatch, tmp_path):
+    import hermes_cli.notebooklm as notebooklm_mod
+
+    broken_link = tmp_path / "broken.pdf"
+    broken_link.symlink_to(tmp_path / "missing-target.pdf")
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ValueError, match="existing local file"):
+        notebooklm_mod.add_source(
+            notebook_id="nb-478",
+            source_type="file",
+            content=str(broken_link),
+        )
+
+
+
+def test_add_source_file_rejects_outside_allowed_roots_for_gateway_session(monkeypatch, tmp_path):
+    import hermes_cli.notebooklm as notebooklm_mod
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    outside_path = tmp_path / "outside.pdf"
+    outside_path.write_bytes(b"%PDF-outside")
+
+    tokens = set_session_vars(
+        platform="telegram",
+        chat_id="-1003586456169",
+        thread_id="478",
+        session_key="sess-1",
+    )
+    try:
+        with pytest.raises(ValueError, match="allowed roots"):
+            notebooklm_mod.add_source(
+                notebook_id="nb-478",
+                source_type="file",
+                content=str(outside_path),
+            )
+    finally:
+        clear_session_vars(tokens)
+
+
+
+def test_add_source_file_accepts_cached_document_for_gateway_session(monkeypatch, tmp_path):
+    import hermes_cli.notebooklm as notebooklm_mod
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    recorded = {}
+    hermes_home = tmp_path / ".hermes"
+    cache_dir = hermes_home / "cache" / "documents"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached_file = cache_dir / "doc_123456_report.pdf"
+    cached_file.write_bytes(b"%PDF-cache")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def fake_run_cli_json(args, *, profile="default"):
+        recorded["args"] = args
+        recorded["profile"] = profile
+        return {"source": {"id": "src-1"}}
+
+    monkeypatch.setattr(notebooklm_mod, "_run_cli_json", fake_run_cli_json)
+
+    tokens = set_session_vars(
+        platform="telegram",
+        chat_id="-1003586456169",
+        thread_id="478",
+        session_key="sess-1",
+    )
+    try:
+        payload = notebooklm_mod.add_source(
+            notebook_id="nb-478",
+            source_type="file",
+            content=str(cached_file),
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert recorded == {
+        "args": [
+            "source",
+            "add",
+            str(cached_file.resolve()),
+            "--type",
+            "file",
+            "--notebook",
+            "nb-478",
+            "--json",
+        ],
+        "profile": "default",
+    }
+    assert payload == {"source": {"id": "src-1"}}
+
+
+
+def test_add_source_file_rejects_symlink_escape_for_gateway_session(monkeypatch, tmp_path):
+    import hermes_cli.notebooklm as notebooklm_mod
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    hermes_home = tmp_path / ".hermes"
+    cache_dir = hermes_home / "cache" / "documents"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    outside_path = tmp_path / "outside.pdf"
+    outside_path.write_bytes(b"%PDF-outside")
+    link_path = cache_dir / "doc_link.pdf"
+    link_path.symlink_to(outside_path)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    tokens = set_session_vars(
+        platform="telegram",
+        chat_id="-1003586456169",
+        thread_id="478",
+        session_key="sess-1",
+    )
+    try:
+        with pytest.raises(ValueError, match="allowed roots"):
+            notebooklm_mod.add_source(
+                notebook_id="nb-478",
+                source_type="file",
+                content=str(link_path),
+            )
+    finally:
+        clear_session_vars(tokens)
+
+
+
+def test_add_source_file_rejects_hard_link_in_gateway_cache(monkeypatch, tmp_path):
+    import os
+    import hermes_cli.notebooklm as notebooklm_mod
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    hermes_home = tmp_path / ".hermes"
+    cache_dir = hermes_home / "cache" / "documents"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    outside_path = tmp_path / "outside.pdf"
+    outside_path.write_bytes(b"%PDF-outside")
+    hard_link_path = cache_dir / "doc_hardlink.pdf"
+    os.link(outside_path, hard_link_path)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    tokens = set_session_vars(
+        platform="telegram",
+        chat_id="-1003586456169",
+        thread_id="478",
+        session_key="sess-1",
+    )
+    try:
+        with pytest.raises(ValueError, match="hard-linked"):
+            notebooklm_mod.add_source(
+                notebook_id="nb-478",
+                source_type="file",
+                content=str(hard_link_path),
+            )
+    finally:
+        clear_session_vars(tokens)
