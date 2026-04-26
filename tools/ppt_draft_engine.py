@@ -30,6 +30,7 @@ _XLSX_NS = {
 _INTRO_ASSET_DIR = Path(__file__).resolve().parents[1] / "assets" / "ppt_draft"
 _FIXED_INTRO_PAGE_1 = _INTRO_ASSET_DIR / "lynchpin_intro_page1_unified.png"
 _FIXED_INTRO_PAGE_2 = _INTRO_ASSET_DIR / "lynchpin_intro_page2_unified.png"
+_HEADER_LOGO_ASSET = _INTRO_ASSET_DIR / "linchpin_header_logo.emf"
 
 
 class DraftInputError(Exception):
@@ -96,6 +97,19 @@ class OfferRenderPlan:
 class DeckRenderPlan:
     briefing_chunks: list[list[ParsedOffer]]
     offer_plans: list[OfferRenderPlan]
+
+
+@dataclass(slots=True)
+class OfferOverviewLayout:
+    headline_text: str
+    title_top: float
+    title_height: float
+    title_font_size: int
+    subtitle_top: float
+    price_row_top: float
+    note_row_top: float
+    photos_top: float
+    photo_height: float
 
 
 def _normalize_tag(value: str) -> str:
@@ -453,6 +467,59 @@ def build_deck_render_plan(payload: DraftBuildPayload, config: DraftTemplateConf
 
 
 
+def compose_offer_headline(offer: ParsedOffer) -> str:
+    return f"{offer.location} {offer.name}".strip()
+
+
+
+def _wrap_offer_headline(text: str, *, target_chars: int = 30, min_split: int = 18, max_split: int = 40) -> str:
+    normalized = " ".join(str(text or "").split())
+    if len(normalized) <= target_chars:
+        return normalized
+
+    separators = [" / ", " | ", " - ", " "]
+    candidates: list[int] = []
+    for separator in separators:
+        start = 0
+        while True:
+            idx = normalized.find(separator, start)
+            if idx == -1:
+                break
+            split_at = idx + len(separator.strip())
+            if min_split <= split_at <= max_split:
+                candidates.append(split_at)
+            start = idx + len(separator)
+
+    if candidates:
+        split_at = min(candidates, key=lambda idx: abs(idx - target_chars))
+    else:
+        split_at = min(len(normalized), target_chars)
+
+    left = normalized[:split_at].rstrip(" /|-")
+    right = normalized[split_at:].lstrip(" /|-")
+    if not right:
+        return normalized
+    return f"{left}\n{right}"
+
+
+
+def build_offer_overview_layout(offer: ParsedOffer) -> OfferOverviewLayout:
+    headline = _wrap_offer_headline(compose_offer_headline(offer))
+    is_wrapped = "\n" in headline
+    return OfferOverviewLayout(
+        headline_text=headline,
+        title_top=1.55,
+        title_height=0.82,
+        title_font_size=20 if is_wrapped else 22,
+        subtitle_top=2.34,
+        price_row_top=2.66,
+        note_row_top=3.02,
+        photos_top=3.38,
+        photo_height=3.52,
+    )
+
+
+
 def create_draft_pptx(
     payload: DraftBuildPayload,
     output_path: str | Path,
@@ -465,14 +532,15 @@ def create_draft_pptx(
 
     from pptx import Presentation
     from pptx.dml.color import RGBColor
-    from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE
+    from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE, MSO_CONNECTOR
     from pptx.enum.text import PP_ALIGN
     from pptx.util import Inches, Pt
 
     FONT_FAMILY = "맑은 고딕"
-    COLOR_PRIMARY = "4B675D"
-    COLOR_PRIMARY_DARK = "29453B"
-    COLOR_ACCENT = "B8C5BE"
+    HEADER_FONT_FAMILY = "-윤고딕310"
+    COLOR_PRIMARY = "1D4427"
+    COLOR_PRIMARY_DARK = "1D4427"
+    COLOR_ACCENT = "1D4427"
     COLOR_TEXT = "24312C"
     COLOR_LIGHT = "F4F6F3"
     COLOR_BORDER = "D8DEDA"
@@ -610,19 +678,42 @@ def create_draft_pptx(
         style_paragraph(paragraph, size=10, color=COLOR_WHITE, bold=True, alignment=PP_ALIGN.CENTER)
         return shape
 
-    def add_brand_lockup(slide, *, left: float = 10.55, top: float = 0.18, color: str = COLOR_WHITE):
-        box = slide.shapes.add_textbox(Inches(left), Inches(top), Inches(2.2), Inches(0.48))
-        frame = box.text_frame
-        frame.clear()
-        frame.margin_left = 0
-        frame.margin_right = 0
-        primary = frame.paragraphs[0]
-        primary.text = "LINCHPIN"
-        style_paragraph(primary, size=16, color=color, bold=True, alignment=PP_ALIGN.RIGHT)
-        secondary = frame.add_paragraph()
-        secondary.text = "REAL ESTATE AGENCY"
-        style_paragraph(secondary, size=7, color=color, bold=False, alignment=PP_ALIGN.RIGHT)
-        return box
+    HEADER_BAND_HEIGHT = 1.217
+    HEADER_TAB_LEFT = 0.554
+    HEADER_TAB_TOP = 0.663
+    HEADER_TAB_WIDTH = 3.325
+    HEADER_TAB_HEIGHT = 0.554
+    HEADER_TITLE_LEFT = 0.625
+    HEADER_TITLE_TOP = 0.764
+    HEADER_TITLE_WIDTH = 3.0
+    HEADER_TITLE_HEIGHT = 0.438
+    HEADER_UNDERLINE_LEFT = 0.723
+    HEADER_UNDERLINE_TOP = 1.217
+    HEADER_UNDERLINE_WIDTH = 2.964
+    HEADER_LOGO_LEFT = 10.283
+    HEADER_LOGO_TOP = 0.425
+    HEADER_LOGO_WIDTH = 2.644
+    HEADER_LOGO_HEIGHT = 0.455
+
+    def style_header_paragraph(paragraph, *, size: int = 20, color: str = COLOR_TEXT, bold: bool = True):
+        paragraph.font.name = HEADER_FONT_FAMILY
+        paragraph.font.size = Pt(size)
+        paragraph.font.bold = bold
+        paragraph.font.color.rgb = rgb(color)
+        for run in paragraph.runs:
+            run.font.name = HEADER_FONT_FAMILY
+            run.font.size = Pt(size)
+            run.font.bold = bold
+            run.font.color.rgb = rgb(color)
+
+    def add_brand_lockup(slide):
+        return slide.shapes.add_picture(
+            str(_HEADER_LOGO_ASSET),
+            Inches(HEADER_LOGO_LEFT),
+            Inches(HEADER_LOGO_TOP),
+            width=Inches(HEADER_LOGO_WIDTH),
+            height=Inches(HEADER_LOGO_HEIGHT),
+        )
 
     def add_small_dots(slide, *, left: float, top: float, count: int = 3):
         for index in range(count):
@@ -665,31 +756,49 @@ def create_draft_pptx(
             Inches(0),
             Inches(0),
             Inches(13.333),
-            Inches(0.92),
+            Inches(HEADER_BAND_HEIGHT),
         )
         band.fill.solid()
         band.fill.fore_color.rgb = rgb(COLOR_PRIMARY_DARK)
         band.line.color.rgb = rgb(COLOR_PRIMARY_DARK)
 
-        tab_width = max(2.9, min(4.4, 1.85 + len(section_label) * 0.13))
-        chip = slide.shapes.add_shape(
-            MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE,
-            Inches(0.55),
-            Inches(0.42),
-            Inches(tab_width),
-            Inches(0.5),
+        tab = slide.shapes.add_shape(
+            MSO_AUTO_SHAPE_TYPE.ROUND_1_RECTANGLE,
+            Inches(HEADER_TAB_LEFT),
+            Inches(HEADER_TAB_TOP),
+            Inches(HEADER_TAB_WIDTH),
+            Inches(HEADER_TAB_HEIGHT),
         )
-        chip.fill.solid()
-        chip.fill.fore_color.rgb = rgb(COLOR_WHITE)
-        chip.line.color.rgb = rgb(COLOR_WHITE)
-        chip_frame = chip.text_frame
-        chip_frame.clear()
-        chip_frame.margin_left = Pt(10)
-        chip_frame.margin_right = Pt(10)
-        chip_frame.margin_top = Pt(4)
-        chip_p = chip_frame.paragraphs[0]
-        chip_p.text = section_label
-        style_paragraph(chip_p, size=15, color=COLOR_PRIMARY_DARK, bold=True)
+        tab.fill.solid()
+        tab.fill.fore_color.rgb = rgb(COLOR_WHITE)
+        tab.line.color.rgb = rgb(COLOR_WHITE)
+
+        title_box = slide.shapes.add_textbox(
+            Inches(HEADER_TITLE_LEFT),
+            Inches(HEADER_TITLE_TOP),
+            Inches(HEADER_TITLE_WIDTH),
+            Inches(HEADER_TITLE_HEIGHT),
+        )
+        title_frame = title_box.text_frame
+        title_frame.clear()
+        title_frame.margin_left = 0
+        title_frame.margin_right = 0
+        title_frame.margin_top = 0
+        title_frame.margin_bottom = 0
+        title_p = title_frame.paragraphs[0]
+        title_p.text = section_label
+        style_header_paragraph(title_p)
+
+        underline = slide.shapes.add_connector(
+            MSO_CONNECTOR.STRAIGHT,
+            Inches(HEADER_UNDERLINE_LEFT),
+            Inches(HEADER_UNDERLINE_TOP),
+            Inches(HEADER_UNDERLINE_LEFT + HEADER_UNDERLINE_WIDTH),
+            Inches(HEADER_UNDERLINE_TOP),
+        )
+        underline.line.color.rgb = rgb(COLOR_PRIMARY_DARK)
+        underline.line.width = Pt(0.75)
+
         add_brand_lockup(slide)
         return band
 
@@ -865,19 +974,24 @@ def create_draft_pptx(
         representative_image: str | None,
         map_image: str | None,
     ):
+        layout = build_offer_overview_layout(offer)
+
         add_header_band(slide, f"02. 매물 소개 ({offer_index})")
         add_small_dots(slide, left=0.92, top=1.38)
 
-        name_box = slide.shapes.add_textbox(Inches(0.9), Inches(1.58), Inches(6.0), Inches(0.52))
+        name_box = slide.shapes.add_textbox(Inches(0.9), Inches(layout.title_top), Inches(11.6), Inches(layout.title_height))
         name_frame = name_box.text_frame
         name_frame.clear()
+        name_frame.word_wrap = True
         name_frame.margin_left = 0
         name_frame.margin_right = 0
-        name_p = name_frame.paragraphs[0]
-        name_p.text = f"{offer.location} {offer.name}".strip()
-        style_paragraph(name_p, size=23, color=COLOR_TEXT, bold=True)
+        headline_lines = layout.headline_text.split("\n") if layout.headline_text else [""]
+        for idx, line in enumerate(headline_lines):
+            name_p = name_frame.paragraphs[0] if idx == 0 else name_frame.add_paragraph()
+            name_p.text = line
+            style_paragraph(name_p, size=layout.title_font_size, color=COLOR_TEXT, bold=True)
 
-        subtitle_box = slide.shapes.add_textbox(Inches(0.9), Inches(2.03), Inches(5.6), Inches(0.34))
+        subtitle_box = slide.shapes.add_textbox(Inches(0.9), Inches(layout.subtitle_top), Inches(5.8), Inches(0.34))
         subtitle_frame = subtitle_box.text_frame
         subtitle_frame.clear()
         subtitle_frame.margin_left = 0
@@ -886,15 +1000,15 @@ def create_draft_pptx(
         subtitle_p.text = format_size_floor(offer.size_floor)
         style_paragraph(subtitle_p, size=15, color=COLOR_MUTED, bold=True)
 
-        cursor = 7.1
+        cursor = 0.9
         for label, value in parse_price_components(offer.price)[:3]:
-            cursor = add_label_value_pair(slide, label, value, left=cursor, top=1.6)
+            cursor = add_label_value_pair(slide, label, value, left=cursor, top=layout.price_row_top)
 
         if offer.points:
             feature_pill = slide.shapes.add_shape(
                 MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE,
-                Inches(7.1),
-                Inches(2.05),
+                Inches(0.9),
+                Inches(layout.note_row_top),
                 Inches(0.82),
                 Inches(0.34),
             )
@@ -907,7 +1021,7 @@ def create_draft_pptx(
             feature_label.text = "비고"
             style_paragraph(feature_label, size=10, color=COLOR_WHITE, bold=True, alignment=PP_ALIGN.CENTER)
 
-            feature_box = slide.shapes.add_textbox(Inches(8.02), Inches(2.0), Inches(4.2), Inches(0.52))
+            feature_box = slide.shapes.add_textbox(Inches(1.82), Inches(layout.note_row_top - 0.02), Inches(10.2), Inches(0.5))
             feature_text_frame = feature_box.text_frame
             feature_text_frame.clear()
             feature_text_frame.word_wrap = True
@@ -918,18 +1032,18 @@ def create_draft_pptx(
             style_paragraph(feature_p, size=11, color=COLOR_TEXT, bold=False)
 
         if representative_image:
-            add_picture_cover(slide, representative_image, left=0.78, top=2.65, width=5.72, height=4.35)
+            add_picture_cover(slide, representative_image, left=0.78, top=layout.photos_top, width=5.72, height=layout.photo_height)
         else:
-            add_photo_placeholder(slide, "대표 사진 없음", left=0.78, top=2.65, width=5.72, height=4.35)
+            add_photo_placeholder(slide, "대표 사진 없음", left=0.78, top=layout.photos_top, width=5.72, height=layout.photo_height)
 
         if map_image:
-            add_picture_cover(slide, map_image, left=6.84, top=2.65, width=5.72, height=4.35)
+            add_picture_cover(slide, map_image, left=6.84, top=layout.photos_top, width=5.72, height=layout.photo_height)
         else:
             secondary = next((path for path in offer.photo_paths if path != representative_image), None)
             if secondary:
-                add_picture_cover(slide, secondary, left=6.84, top=2.65, width=5.72, height=4.35)
+                add_picture_cover(slide, secondary, left=6.84, top=layout.photos_top, width=5.72, height=layout.photo_height)
             else:
-                add_photo_placeholder(slide, f"위치 정보\n{offer.location}", left=6.84, top=2.65, width=5.72, height=4.35)
+                add_photo_placeholder(slide, f"위치 정보\n{offer.location}", left=6.84, top=layout.photos_top, width=5.72, height=layout.photo_height)
 
     def add_offer_detail_slide(slide, offer: ParsedOffer, *, offer_index: int, detail_images: list[str]):
         add_header_band(slide, f"02. 매물 소개 ({offer_index})")

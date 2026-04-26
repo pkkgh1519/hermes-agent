@@ -370,6 +370,120 @@ def test_build_offer_render_plan_prefers_unique_detail_images_before_reusing_ove
 
 
 
+def test_build_offer_overview_layout_wraps_long_headline_and_separates_rows():
+    offer = draft_engine.ParsedOffer(
+        id="offer_01",
+        name="동성빌딩 4층 임대 오피스",
+        location="성수동 2가 277-50 / 성수역 도보 4분 / 서울숲 생활권",
+        size_floor="4층 / 14평",
+        price="보증금 200 / 월세 105 / 관리비 16",
+        points=["주차 가능", "공실", "화물 EV 가능"],
+        photo_tag="offer_01",
+    )
+
+    layout = draft_engine.build_offer_overview_layout(offer)
+
+    assert "\n" in layout.headline_text
+    assert layout.price_row_top > layout.subtitle_top
+    assert layout.note_row_top > layout.price_row_top
+    assert layout.photos_top > layout.note_row_top
+
+
+
+def test_create_draft_pptx_uses_safe_overview_layout_for_multiple_long_title_offers(tmp_path):
+    from pptx import Presentation
+
+    csv_path = _write_csv(
+        tmp_path / "offers.csv",
+        REQUIRED_HEADER
+        + _offer_csv_row(
+            "offer_01",
+            name="동성빌딩 4층 임대 오피스",
+            location="성수동 2가 277-50 / 성수역 도보 4분 / 서울숲 생활권",
+        )
+        + "\n"
+        + _offer_csv_row(
+            "offer_02",
+            name="서울숲프라자 6층 업무시설",
+            location="성수동 2가 288-11 / 성수역 도보 3분 / 메인대로 코너 입지",
+            price="보증금 350 / 월세 180 / 관리비 22",
+            points="주차 가능; 공실; 천장형 냉난방기",
+        )
+        + "\n",
+    )
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    payload = build_draft_payload(
+        csv_path,
+        photo_batches=[
+            DraftPhotoBatch(
+                tag="offer_01",
+                image_paths=[
+                    _write_image(image_dir / "offer_01_01.png", size=(1600, 900), color=(40, 70, 120)),
+                    _write_image(image_dir / "offer_01_02.png", size=(1200, 800), color=(180, 190, 205)),
+                    _write_image(image_dir / "offer_01_03.png", size=(1500, 900), color=(230, 230, 230)),
+                ],
+            ),
+            DraftPhotoBatch(
+                tag="offer_02",
+                image_paths=[
+                    _write_image(image_dir / "offer_02_01.png", size=(1600, 900), color=(70, 90, 120)),
+                    _write_image(image_dir / "offer_02_02.png", size=(1200, 800), color=(190, 200, 210)),
+                    _write_image(image_dir / "offer_02_03.png", size=(1500, 900), color=(210, 220, 230)),
+                ],
+            ),
+        ],
+    )
+
+    output_path = tmp_path / "draft-multi-long-overview.pptx"
+    create_draft_pptx(payload, output_path)
+
+    prs = Presentation(str(output_path))
+    overview_slides = []
+    for slide in prs.slides:
+        slide_texts = [
+            paragraph.text
+            for shape in slide.shapes
+            if getattr(shape, "has_text_frame", False)
+            for paragraph in shape.text_frame.paragraphs
+            if paragraph.text
+        ]
+        if any(text.startswith("02. 매물 소개") for text in slide_texts) and "보증금" in slide_texts:
+            overview_slides.append(slide)
+
+    assert len(overview_slides) == 2
+
+    observed_price_tops = []
+    for slide in overview_slides:
+        price_shape = next(
+            shape
+            for shape in slide.shapes
+            if getattr(shape, "has_text_frame", False)
+            and any(paragraph.text == "보증금" for paragraph in shape.text_frame.paragraphs)
+        )
+        note_shape = next(
+            shape
+            for shape in slide.shapes
+            if getattr(shape, "has_text_frame", False)
+            and any(paragraph.text == "비고" for paragraph in shape.text_frame.paragraphs)
+        )
+        headline_shape = next(
+            shape
+            for shape in slide.shapes
+            if getattr(shape, "has_text_frame", False)
+            and any(
+                ("동성빌딩" in paragraph.text) or ("서울숲프라자" in paragraph.text)
+                for paragraph in shape.text_frame.paragraphs
+            )
+        )
+        observed_price_tops.append(price_shape.top)
+        assert price_shape.top >= headline_shape.top + headline_shape.height
+        assert note_shape.top > price_shape.top
+
+    assert len(set(observed_price_tops)) == 1
+
+
+
 def test_create_draft_pptx_accepts_custom_template_config(tmp_path):
     rows = [REQUIRED_HEADER.strip()]
     image_dir = tmp_path / "images"
@@ -510,6 +624,7 @@ def test_create_draft_pptx_writes_expected_slides_for_basic_payload(tmp_path):
 def test_create_draft_pptx_uses_fixed_intro_pages_and_pdf_like_post_intro_structure(tmp_path):
     from pptx import Presentation
     from pptx.enum.shapes import MSO_SHAPE_TYPE
+    from pptx.util import Inches
 
     csv_path = _write_csv(
         tmp_path / "offers.csv",
@@ -592,12 +707,18 @@ def test_create_draft_pptx_uses_fixed_intro_pages_and_pdf_like_post_intro_struct
     assert "보증금" in overview_text
     assert "서울숲드림타워" in detail_text
     assert "보증금" not in detail_text
-    assert [shape.shape_type for shape in detail_slide.shapes].count(MSO_SHAPE_TYPE.PICTURE) == 2
+    detail_pictures = [
+        shape
+        for shape in detail_slide.shapes
+        if shape.shape_type == MSO_SHAPE_TYPE.PICTURE and shape.top > Inches(1.5)
+    ]
+    assert len(detail_pictures) == 2
 
 
 
 def test_create_draft_pptx_uses_brand_green_system_for_offer_and_closing_slides(tmp_path):
     from pptx import Presentation
+    from pptx.util import Inches
 
     csv_path = _write_csv(
         tmp_path / "offers.csv",
@@ -642,17 +763,110 @@ def test_create_draft_pptx_uses_brand_green_system_for_offer_and_closing_slides(
     briefing_header_band = next(
         shape for shape in briefing_slide.shapes if shape.width == prs.slide_width and shape.height > 600000
     )
-    offer_header_chip = next(
+    offer_header_tab = next(
         shape
         for shape in offer_slide.shapes
-        if getattr(shape, "has_text_frame", False)
-        and any(paragraph.text == "02. 매물 소개 (1)" for paragraph in shape.text_frame.paragraphs)
+        if shape.left == Inches(0.554)
+        and shape.top == Inches(0.663)
+        and shape.width == Inches(3.325)
+        and shape.height == Inches(0.554)
     )
 
     assert offer_header_band.fill.fore_color.rgb == gallery_header_band.fill.fore_color.rgb == closing_background.fill.fore_color.rgb
     assert briefing_header_band.fill.fore_color.rgb == offer_header_band.fill.fore_color.rgb
-    assert str(offer_header_band.fill.fore_color.rgb) == "29453B"
-    assert str(offer_header_chip.fill.fore_color.rgb) == "FFFFFF"
+    assert str(offer_header_band.fill.fore_color.rgb) == "1D4427"
+    assert str(offer_header_tab.fill.fore_color.rgb) == "FFFFFF"
+
+
+
+def test_create_draft_pptx_repeats_sample_pptx_header_asset_across_content_slides(tmp_path):
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE, MSO_SHAPE_TYPE
+    from pptx.util import Inches, Pt
+
+    header_logo_asset = Path(__file__).resolve().parents[2] / "assets" / "ppt_draft" / "linchpin_header_logo.emf"
+    assert header_logo_asset.exists()
+
+    csv_path = _write_csv(
+        tmp_path / "offers.csv",
+        REQUIRED_HEADER
+        + "offer_01,서울숲드림타워,성수동2가323,2층 / 12평,보증금 2200 / 월세 220 / 관리비 35,성수역 도보 6분; 무료주차 1대 가능; 지상 로딩도크 및 화물 E/V 有,offer_01\n",
+    )
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+
+    payload = build_draft_payload(
+        csv_path,
+        photo_batches=[
+            DraftPhotoBatch(
+                tag="offer_01",
+                image_paths=[_write_image(image_dir / f"{idx:02d}.png", size=(1600, 900), color=(40 + idx, 70, 120)) for idx in range(8)],
+            ),
+        ],
+    )
+
+    output_path = tmp_path / "draft-sample-header.pptx"
+    create_draft_pptx(payload, output_path)
+
+    prs = Presentation(str(output_path))
+    content_slides = [prs.slides[2], prs.slides[3], prs.slides[4], prs.slides[5]]
+
+    for slide in content_slides:
+        header_band = next(shape for shape in slide.shapes if shape.width == prs.slide_width and shape.top == 0)
+        assert header_band.left == 0
+        assert header_band.height == Inches(1.217)
+        assert str(header_band.fill.fore_color.rgb) == "1D4427"
+
+        tab = next(
+            shape
+            for shape in slide.shapes
+            if getattr(shape, "auto_shape_type", None) == MSO_AUTO_SHAPE_TYPE.ROUND_1_RECTANGLE
+            and shape.left == Inches(0.554)
+            and shape.top == Inches(0.663)
+        )
+        assert tab.width == Inches(3.325)
+        assert tab.height == Inches(0.554)
+        assert str(tab.fill.fore_color.rgb) == "FFFFFF"
+
+        title_box = next(
+            shape
+            for shape in slide.shapes
+            if getattr(shape, "has_text_frame", False)
+            and any(paragraph.text.startswith(("01.", "02.", "03.")) for paragraph in shape.text_frame.paragraphs)
+        )
+        assert title_box.left == Inches(0.625)
+        assert title_box.top == Inches(0.764)
+        assert title_box.height == Inches(0.438)
+        title_paragraph = title_box.text_frame.paragraphs[0]
+        assert title_paragraph.font.name == "-윤고딕310"
+        assert title_paragraph.font.size == Pt(20)
+        assert title_paragraph.font.bold is True
+
+        tab_line = next(
+            shape
+            for shape in slide.shapes
+            if shape.left == Inches(0.723)
+            and shape.top == Inches(1.217)
+            and shape.width == Inches(2.964)
+            and shape.height == 0
+        )
+        assert str(tab_line.line.color.rgb) == "1D4427"
+
+        logo = next(
+            shape
+            for shape in slide.shapes
+            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE
+            and shape.left == Inches(10.283)
+            and shape.top == Inches(0.425)
+        )
+        assert logo.width == Inches(2.644)
+        assert logo.height == Inches(0.455)
+
+        assert not any(
+            getattr(shape, "has_text_frame", False)
+            and any(paragraph.text == "LINCHPIN" for paragraph in shape.text_frame.paragraphs)
+            for shape in slide.shapes
+        )
 
 
 
