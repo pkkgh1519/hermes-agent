@@ -258,6 +258,24 @@ class TestDocumentDownloadBlock:
         assert event.media_types == ["application/zip"]
 
     @pytest.mark.asyncio
+    async def test_csv_document_cached(self, adapter):
+        csv_bytes = b"id,name\noffer_01,test\n"
+        file_obj = _make_file_obj(csv_bytes)
+        doc = _make_document(
+            file_name="offers.csv",
+            mime_type="text/csv",
+            file_size=len(csv_bytes),
+            file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls and event.media_urls[0].endswith("offers.csv")
+        assert event.media_types == ["text/csv"]
+
+    @pytest.mark.asyncio
     async def test_oversized_file_rejected(self, adapter):
         doc = _make_document(file_name="huge.pdf", file_size=25 * 1024 * 1024)
         msg = _make_message(document=doc)

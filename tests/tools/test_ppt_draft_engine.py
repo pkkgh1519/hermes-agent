@@ -1,10 +1,13 @@
 import base64
 from pathlib import Path
+from xml.sax.saxutils import escape
 from zipfile import ZipFile
 
 import pytest
+from PIL import Image
 
 from gateway.ppt_draft_state import DraftPhotoBatch
+from tools import ppt_draft_engine as draft_engine
 from tools.ppt_draft_engine import (
     DraftInputError,
     build_draft_payload,
@@ -24,9 +27,106 @@ def _write_csv(path: Path, content: str) -> Path:
     return path
 
 
-def _write_image(path: Path) -> str:
-    path.write_bytes(PNG_1X1)
+def _xlsx_column_name(index: int) -> str:
+    name = ""
+    while index > 0:
+        index, remainder = divmod(index - 1, 26)
+        name = chr(65 + remainder) + name
+    return name
+
+
+def _write_xlsx(path: Path, rows: list[list[str]], *, sheet_name: str = "in") -> Path:
+    worksheet_rows: list[str] = []
+    for row_idx, row in enumerate(rows, start=1):
+        cells: list[str] = []
+        for col_idx, value in enumerate(row, start=1):
+            cell_ref = f"{_xlsx_column_name(col_idx)}{row_idx}"
+            cells.append(
+                f'<c r="{cell_ref}" t="inlineStr"><is><t xml:space="preserve">{escape(str(value or ""))}</t></is></c>'
+            )
+        worksheet_rows.append(f'<row r="{row_idx}">{"".join(cells)}</row>')
+
+    workbook_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets>'
+        f'<sheet name="{escape(sheet_name)}" sheetId="1" r:id="rId1"/>'
+        '</sheets>'
+        '</workbook>'
+    )
+    worksheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<sheetData>{"".join(worksheet_rows)}</sheetData>'
+        '</worksheet>'
+    )
+
+    with ZipFile(path, "w") as zf:
+        zf.writestr(
+            "[Content_Types].xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/worksheets/sheet1.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            '</Types>',
+        )
+        zf.writestr(
+            "_rels/.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+            'Target="xl/workbook.xml"/>'
+            '</Relationships>',
+        )
+        zf.writestr("xl/workbook.xml", workbook_xml)
+        zf.writestr(
+            "xl/_rels/workbook.xml.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+            'Target="worksheets/sheet1.xml"/>'
+            '</Relationships>',
+        )
+        zf.writestr("xl/worksheets/sheet1.xml", worksheet_xml)
+    return path
+
+
+def _write_image(path: Path, *, size: tuple[int, int] = (1, 1), color: tuple[int, int, int] = (240, 240, 240)) -> str:
+    if size == (1, 1):
+        path.write_bytes(PNG_1X1)
+    else:
+        Image.new("RGB", size, color).save(path)
     return str(path)
+
+
+def _offer_csv_row(
+    offer_id: str,
+    *,
+    name: str | None = None,
+    location: str | None = None,
+    size_floor: str = "2층 / 12평",
+    price: str = "보증금 2200 / 월세 220 / 관리비 35",
+    points: str = "성수역 도보 6분; 무료주차 1대 가능; 지상 로딩도크 및 화물 E/V 有",
+    photo_tag: str | None = None,
+) -> str:
+    return ",".join(
+        [
+            offer_id,
+            name or f"건물 {offer_id}",
+            location or f"성수동 {offer_id}",
+            size_floor,
+            price,
+            points,
+            photo_tag or offer_id,
+        ]
+    )
 
 
 def _count_slides(pptx_path: Path) -> int:
@@ -46,6 +146,67 @@ def test_parse_offers_csv_rejects_missing_required_columns(tmp_path):
 
     assert exc.value.code == "missing_columns"
     assert "photo_tag" in str(exc.value)
+
+
+
+def test_parse_offers_csv_normalizes_whitespace_padded_headers(tmp_path):
+    csv_path = _write_csv(
+        tmp_path / "offers.csv",
+        "id , name , location , size_floor , price , points , photo_tag \n"
+        "offer_01,서울숲드림타워,성수동2가323,2층 / 12평,보증금 2200 / 월세 220 / 관리비 35,성수역 도보 6분; 무료주차 1대 가능,offer_01\n",
+    )
+
+    offers = parse_offers_csv(csv_path)
+
+    assert [offer.id for offer in offers] == ["offer_01"]
+    assert offers[0].photo_tag == "offer_01"
+    assert offers[0].name == "서울숲드림타워"
+
+
+
+def test_parse_offers_csv_accepts_xlsx_and_splits_newline_points(tmp_path):
+    xlsx_path = _write_xlsx(
+        tmp_path / "offers.xlsx",
+        [
+            ["id", "name", "location", "size_floor", "price", "points", "photo_tag"],
+            [
+                "offer_01",
+                "서울숲드림타워",
+                "성수동2가323",
+                "2층 / 12평",
+                "보증금 2200 / 월세 220 / 관리비 35",
+                "성수역 도보 6분\n무료주차 1대 가능\n지상 로딩도크 및 화물 E/V 有",
+                "offer_01",
+            ],
+        ],
+    )
+
+    offers = parse_offers_csv(xlsx_path)
+
+    assert [offer.id for offer in offers] == ["offer_01"]
+    assert offers[0].points == [
+        "성수역 도보 6분",
+        "무료주차 1대 가능",
+        "지상 로딩도크 및 화물 E/V 有",
+    ]
+    assert offers[0].photo_tag == "offer_01"
+
+
+
+def test_parse_offers_csv_wraps_malformed_xlsx_xml_in_draft_input_error(tmp_path):
+    xlsx_path = tmp_path / "broken.xlsx"
+    with ZipFile(xlsx_path, "w") as zf:
+        zf.writestr("xl/workbook.xml", "<broken")
+        zf.writestr(
+            "xl/_rels/workbook.xml.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>',
+        )
+
+    with pytest.raises(DraftInputError) as exc:
+        parse_offers_csv(xlsx_path)
+
+    assert exc.value.code == "invalid_xlsx"
 
 
 
@@ -120,6 +281,189 @@ def test_build_draft_payload_normalizes_points_and_aggregates_photo_batches(tmp_
 
 
 
+def test_draft_template_config_defaults():
+    config = draft_engine.DraftTemplateConfig()
+
+    assert config.briefing_offers_per_slide == 5
+    assert config.detail_images_per_slide == 2
+    assert config.gallery_images_per_slide == 9
+
+
+
+def test_draft_template_config_normalizes_intro_assets_to_paths(tmp_path):
+    config = draft_engine.DraftTemplateConfig(
+        intro_assets=(str(tmp_path / "intro-1.png"), str(tmp_path / "intro-2.png")),
+    )
+
+    assert all(isinstance(path, Path) for path in config.intro_assets)
+
+
+
+def test_draft_template_config_rejects_unsupported_values():
+    with pytest.raises(ValueError):
+        draft_engine.DraftTemplateConfig(briefing_offers_per_slide=0)
+
+    with pytest.raises(ValueError):
+        draft_engine.DraftTemplateConfig(gallery_images_per_slide=0)
+
+    with pytest.raises(ValueError):
+        draft_engine.DraftTemplateConfig(detail_images_per_slide=3)
+
+
+
+def test_build_deck_render_plan_chunks_briefing_by_five(tmp_path):
+    rows = [REQUIRED_HEADER.strip()]
+    for idx in range(1, 7):
+        offer_id = f"offer_{idx:02d}"
+        rows.append(_offer_csv_row(offer_id))
+    csv_path = _write_csv(tmp_path / "offers.csv", "\n".join(rows) + "\n")
+
+    payload = build_draft_payload(
+        csv_path,
+        photo_batches=[
+            DraftPhotoBatch(tag=f"offer_{idx:02d}", image_paths=[f"/tmp/offer_{idx:02d}.jpg"])
+            for idx in range(1, 7)
+        ],
+    )
+
+    plan = draft_engine.build_deck_render_plan(payload, draft_engine.DraftTemplateConfig())
+
+    assert len(plan.briefing_chunks) == 2
+    assert [len(chunk) for chunk in plan.briefing_chunks] == [5, 1]
+
+
+
+def test_build_offer_render_plan_prefers_unique_detail_images_before_reusing_overview(tmp_path):
+    csv_path = _write_csv(
+        tmp_path / "offers.csv",
+        REQUIRED_HEADER + _offer_csv_row("offer_01") + "\n",
+    )
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+
+    hero_image = _write_image(image_dir / "hero.png", size=(1600, 900), color=(40, 70, 120))
+    detail_one = _write_image(image_dir / "detail-01.png", size=(1400, 900), color=(120, 130, 140))
+    detail_two = _write_image(image_dir / "detail-02.png", size=(1500, 900), color=(160, 170, 180))
+    map_image = _write_image(image_dir / "map.png", size=(900, 1400), color=(230, 230, 230))
+    gallery_image = _write_image(image_dir / "gallery.png", size=(1500, 900), color=(200, 210, 220))
+
+    payload = build_draft_payload(
+        csv_path,
+        photo_batches=[
+            DraftPhotoBatch(
+                tag="offer_01",
+                image_paths=[hero_image, detail_one, detail_two, map_image, gallery_image],
+            )
+        ],
+    )
+
+    offer = payload.offers[0]
+    plan = draft_engine.build_offer_render_plan(offer, draft_engine.DraftTemplateConfig())
+    gallery_paths = [path for chunk in plan.gallery_chunks for path in chunk]
+
+    assert plan.hero_image == hero_image
+    assert plan.map_image == map_image
+    assert plan.detail_images == [detail_one, detail_two]
+    assert gallery_paths == [gallery_image]
+    assert plan.hero_image not in plan.detail_images
+    assert plan.map_image not in plan.detail_images
+
+
+
+def test_create_draft_pptx_accepts_custom_template_config(tmp_path):
+    rows = [REQUIRED_HEADER.strip()]
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    photo_batches: list[DraftPhotoBatch] = []
+    for idx in range(1, 7):
+        offer_id = f"offer_{idx:02d}"
+        rows.append(_offer_csv_row(offer_id))
+        photo_batches.append(
+            DraftPhotoBatch(
+                tag=offer_id,
+                image_paths=[_write_image(image_dir / f"{offer_id}.png")],
+            )
+        )
+    csv_path = _write_csv(tmp_path / "offers.csv", "\n".join(rows) + "\n")
+    payload = build_draft_payload(csv_path, photo_batches=photo_batches)
+
+    output_path = tmp_path / "draft-custom-config.pptx"
+    create_draft_pptx(
+        payload,
+        output_path,
+        template_config=draft_engine.DraftTemplateConfig(briefing_offers_per_slide=10),
+    )
+
+    assert output_path.exists()
+    assert _count_slides(output_path) == 16
+
+
+
+def test_create_draft_pptx_rejects_non_image_intro_assets(tmp_path):
+    csv_path = _write_csv(
+        tmp_path / "offers.csv",
+        REQUIRED_HEADER + _offer_csv_row("offer_01") + "\n",
+    )
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    payload = build_draft_payload(
+        csv_path,
+        photo_batches=[
+            DraftPhotoBatch(
+                tag="offer_01",
+                image_paths=[_write_image(image_dir / "offer_01.png")],
+            )
+        ],
+    )
+
+    intro_one = tmp_path / "intro-1.txt"
+    intro_two = tmp_path / "intro-2.txt"
+    intro_one.write_text("not an image", encoding="utf-8")
+    intro_two.write_text("also not an image", encoding="utf-8")
+
+    with pytest.raises(DraftInputError) as exc:
+        create_draft_pptx(
+            payload,
+            tmp_path / "draft-invalid-intro.pptx",
+            template_config=draft_engine.DraftTemplateConfig(
+                intro_assets=(intro_one, intro_two),
+            ),
+        )
+
+    assert exc.value.code == "invalid_intro_assets"
+
+
+
+def test_create_draft_pptx_continues_briefing_row_numbers_across_chunks(tmp_path):
+    from pptx import Presentation
+
+    rows = [REQUIRED_HEADER.strip()]
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    photo_batches: list[DraftPhotoBatch] = []
+    for idx in range(1, 7):
+        offer_id = f"offer_{idx:02d}"
+        rows.append(_offer_csv_row(offer_id))
+        photo_batches.append(
+            DraftPhotoBatch(
+                tag=offer_id,
+                image_paths=[_write_image(image_dir / f"briefing-{offer_id}.png")],
+            )
+        )
+    csv_path = _write_csv(tmp_path / "offers.csv", "\n".join(rows) + "\n")
+    payload = build_draft_payload(csv_path, photo_batches=photo_batches)
+
+    output_path = tmp_path / "draft-briefing-numbering.pptx"
+    create_draft_pptx(payload, output_path)
+
+    prs = Presentation(str(output_path))
+    second_briefing_slide = prs.slides[3]
+    briefing_table = next(shape.table for shape in second_briefing_slide.shapes if getattr(shape, "has_table", False))
+
+    assert briefing_table.cell(1, 0).text == "6"
+
+
+
 def test_create_draft_pptx_writes_expected_slides_for_basic_payload(tmp_path):
     csv_path = _write_csv(
         tmp_path / "offers.csv",
@@ -159,7 +503,156 @@ def test_create_draft_pptx_writes_expected_slides_for_basic_payload(tmp_path):
 
     assert Path(created) == output_path
     assert output_path.exists()
-    assert _count_slides(output_path) == 7
+    assert _count_slides(output_path) == 9
+
+
+
+def test_create_draft_pptx_uses_fixed_intro_pages_and_pdf_like_post_intro_structure(tmp_path):
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    csv_path = _write_csv(
+        tmp_path / "offers.csv",
+        REQUIRED_HEADER
+        + "offer_01,서울숲드림타워,성수동2가323,2층 / 12평,보증금 2200 / 월세 220 / 관리비 35,성수역 도보 6분; 무료주차 1대 가능; 지상 로딩도크 및 화물 E/V 有,offer_01\n",
+    )
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+
+    payload = build_draft_payload(
+        csv_path,
+        photo_batches=[
+            DraftPhotoBatch(
+                tag="offer_01",
+                image_paths=[
+                    _write_image(image_dir / "offer_01_main.png", size=(1600, 900), color=(40, 70, 120)),
+                    _write_image(image_dir / "offer_01_sub.png", size=(1200, 800), color=(180, 190, 205)),
+                    _write_image(image_dir / "offer_01_map.png", size=(900, 1400), color=(230, 230, 230)),
+                ],
+            ),
+        ],
+    )
+
+    output_path = tmp_path / "draft-single-offer.pptx"
+    create_draft_pptx(payload, output_path, title="성수 임대차 제안서", client="OO브랜드")
+
+    prs = Presentation(str(output_path))
+    intro_slide = prs.slides[0]
+    profile_slide = prs.slides[1]
+    briefing_slide = prs.slides[2]
+    overview_slide = prs.slides[3]
+    detail_slide = prs.slides[4]
+
+    intro_shape_types = [shape.shape_type for shape in intro_slide.shapes]
+    profile_shape_types = [shape.shape_type for shape in profile_slide.shapes]
+    intro_text = "\n".join(
+        paragraph.text
+        for shape in intro_slide.shapes
+        if getattr(shape, "has_text_frame", False)
+        for paragraph in shape.text_frame.paragraphs
+        if paragraph.text
+    )
+    profile_text = "\n".join(
+        paragraph.text
+        for shape in profile_slide.shapes
+        if getattr(shape, "has_text_frame", False)
+        for paragraph in shape.text_frame.paragraphs
+        if paragraph.text
+    )
+    briefing_text = "\n".join(
+        paragraph.text
+        for shape in briefing_slide.shapes
+        if getattr(shape, "has_text_frame", False)
+        for paragraph in shape.text_frame.paragraphs
+        if paragraph.text
+    )
+    overview_text = "\n".join(
+        paragraph.text
+        for shape in overview_slide.shapes
+        if getattr(shape, "has_text_frame", False)
+        for paragraph in shape.text_frame.paragraphs
+        if paragraph.text
+    )
+    detail_text = "\n".join(
+        paragraph.text
+        for shape in detail_slide.shapes
+        if getattr(shape, "has_text_frame", False)
+        for paragraph in shape.text_frame.paragraphs
+        if paragraph.text
+    )
+
+    assert len(prs.slides) == 6
+    assert intro_shape_types.count(MSO_SHAPE_TYPE.PICTURE) >= 1
+    assert profile_shape_types.count(MSO_SHAPE_TYPE.PICTURE) >= 1
+    assert intro_text == ""
+    assert profile_text == ""
+    assert "01. 추천 매물 브리핑" in briefing_text
+    assert any(getattr(shape, "has_table", False) for shape in briefing_slide.shapes)
+    assert "02. 매물 소개 (1)" in overview_text
+    assert "보증금" in overview_text
+    assert "서울숲드림타워" in detail_text
+    assert "보증금" not in detail_text
+    assert [shape.shape_type for shape in detail_slide.shapes].count(MSO_SHAPE_TYPE.PICTURE) == 2
+
+
+
+def test_create_draft_pptx_uses_brand_green_system_for_offer_and_closing_slides(tmp_path):
+    from pptx import Presentation
+
+    csv_path = _write_csv(
+        tmp_path / "offers.csv",
+        REQUIRED_HEADER
+        + "offer_01,서울숲드림타워,성수동2가323,2층 / 12평,보증금 2200 / 월세 220 / 관리비 35,성수역 도보 6분; 무료주차 1대 가능; 지상 로딩도크 및 화물 E/V 有,offer_01\n",
+    )
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+
+    payload = build_draft_payload(
+        csv_path,
+        photo_batches=[
+            DraftPhotoBatch(
+                tag="offer_01",
+                image_paths=[
+                    _write_image(image_dir / "offer_01_main.png", size=(1600, 900), color=(40, 70, 120)),
+                    _write_image(image_dir / "offer_01_sub.png", size=(1200, 800), color=(180, 190, 205)),
+                    _write_image(image_dir / "offer_01_map.png", size=(900, 1400), color=(230, 230, 230)),
+                ],
+            ),
+        ],
+    )
+
+    output_path = tmp_path / "draft-brand-green.pptx"
+    create_draft_pptx(payload, output_path)
+
+    prs = Presentation(str(output_path))
+    briefing_slide = prs.slides[2]
+    offer_slide = prs.slides[3]
+    gallery_slide = prs.slides[4]
+    closing_slide = prs.slides[5]
+
+    offer_header_band = next(
+        shape for shape in offer_slide.shapes if shape.width == prs.slide_width and shape.height > 600000
+    )
+    gallery_header_band = next(
+        shape for shape in gallery_slide.shapes if shape.width == prs.slide_width and shape.height > 600000
+    )
+    closing_background = next(
+        shape for shape in closing_slide.shapes if shape.width == prs.slide_width and shape.height == prs.slide_height
+    )
+    briefing_header_band = next(
+        shape for shape in briefing_slide.shapes if shape.width == prs.slide_width and shape.height > 600000
+    )
+    offer_header_chip = next(
+        shape
+        for shape in offer_slide.shapes
+        if getattr(shape, "has_text_frame", False)
+        and any(paragraph.text == "02. 매물 소개 (1)" for paragraph in shape.text_frame.paragraphs)
+    )
+
+    assert offer_header_band.fill.fore_color.rgb == gallery_header_band.fill.fore_color.rgb == closing_background.fill.fore_color.rgb
+    assert briefing_header_band.fill.fore_color.rgb == offer_header_band.fill.fore_color.rgb
+    assert str(offer_header_band.fill.fore_color.rgb) == "29453B"
+    assert str(offer_header_chip.fill.fore_color.rgb) == "FFFFFF"
 
 
 
@@ -186,4 +679,4 @@ def test_create_draft_pptx_splits_large_gallery_across_multiple_slides(tmp_path)
     create_draft_pptx(payload, output_path)
 
     assert output_path.exists()
-    assert _count_slides(output_path) == 6
+    assert _count_slides(output_path) == 7

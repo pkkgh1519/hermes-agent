@@ -47,14 +47,16 @@ def ppt_draft_tool(
         return tool_result(
             session_key=session_key,
             has_csv=bool(intake and intake.latest_csv),
+            has_offer_file=bool(intake and intake.latest_csv),
             csv_filename=(intake.latest_csv.filename if intake and intake.latest_csv else None),
+            offer_filename=(intake.latest_csv.filename if intake and intake.latest_csv else None),
             photo_batch_count=(len(intake.photo_batches) if intake else 0),
             photo_tags=(_summarize_photo_tags(intake) if intake else {}),
         )
 
     if action == "build":
         if intake is None or intake.latest_csv is None:
-            return tool_error("No offers.csv is registered for the current session")
+            return tool_error("No offers .csv/.xlsx file is registered for the current session")
         try:
             payload = build_draft_payload(
                 intake.latest_csv.path,
@@ -93,7 +95,7 @@ def check_ppt_draft_requirements() -> bool:
 PPT_DRAFT_SCHEMA = {
     "name": "ppt_draft",
     "description": (
-        "Build a draft PPTX from the current session's uploaded offers.csv and tagged photo batches. "
+        "Build a draft PPTX from the current session's uploaded offers .csv/.xlsx file and tagged photo batches. "
         "Actions: status, build, clear."
     ),
     "parameters": {

@@ -164,7 +164,40 @@ async def test_prepare_inbound_text_records_offers_csv_from_document_cache(tmp_p
     assert intake.latest_csv is not None
     assert intake.latest_csv.filename == "offers.csv"
     assert intake.latest_csv.message_id == "doc-1"
-    assert "Draft intake: csv=offers.csv" in prepared
+    assert "Draft intake: file=offers.csv" in prepared
+
+
+@pytest.mark.asyncio
+async def test_prepare_inbound_text_records_xlsx_from_document_cache(tmp_path, monkeypatch):
+    source = _make_source()
+    session_key = build_session_key(source)
+    runner = _make_runner()
+
+    document_cache = tmp_path / "documents"
+    document_cache.mkdir(parents=True)
+    xlsx_path = document_cache / "매물.xlsx"
+    xlsx_path.write_bytes(b"placeholder-xlsx")
+
+    monkeypatch.setattr("gateway.run.get_document_cache_dir", lambda: document_cache)
+    monkeypatch.setattr("gateway.run.get_image_cache_dir", lambda: tmp_path / "images")
+
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.DOCUMENT,
+        source=source,
+        message_id="doc-xlsx-1",
+        media_urls=[str(xlsx_path)],
+        media_types=["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+    )
+
+    prepared = await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+
+    intake = get_session_draft_intake(session_key)
+    assert intake is not None
+    assert intake.latest_csv is not None
+    assert intake.latest_csv.filename == "매물.xlsx"
+    assert intake.latest_csv.message_id == "doc-xlsx-1"
+    assert "Draft intake: file=매물.xlsx" in prepared
 
 
 @pytest.mark.asyncio
@@ -236,7 +269,7 @@ async def test_prepare_inbound_text_injects_existing_draft_intake_summary():
 
     prepared = await runner._prepare_inbound_message_text(event=event, source=source, history=[])
 
-    assert "Draft intake: csv=offers.csv" in prepared
+    assert "Draft intake: file=offers.csv" in prepared
     assert "offer_01(2)" in prepared
     assert "offer_02(1)" in prepared
     assert "생성해줘" in prepared

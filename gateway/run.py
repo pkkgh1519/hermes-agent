@@ -1085,7 +1085,8 @@ class GatewayRunner:
             for i, path in enumerate(event.media_urls):
                 mime_type = event.media_types[i] if i < len(event.media_types) else ""
                 basename = os.path.basename(path)
-                if not basename.lower().endswith("offers.csv"):
+                extension = Path(basename).suffix.lower()
+                if extension not in {".csv", ".xlsx"}:
                     continue
                 if not self._path_is_within_root(path, document_root):
                     continue
@@ -1135,7 +1136,7 @@ class GatewayRunner:
             tag_counts[batch.tag] += len(batch.image_paths)
 
         parts: list[str] = []
-        parts.append(f"csv={csv_name}" if csv_name else "csv=none")
+        parts.append(f"file={csv_name}" if csv_name else "file=none")
         if tag_counts:
             tags = ", ".join(f"{tag}({count})" for tag, count in tag_counts.items())
             parts.append(f"tags=[{tags}]")
