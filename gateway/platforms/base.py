@@ -430,7 +430,7 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                 raise
 
 
-def cleanup_image_cache(max_age_hours: int = 24) -> int:
+def cleanup_image_cache(max_age_hours: int = 48) -> int:
     """
     Delete cached images older than *max_age_hours*.
 
@@ -637,7 +637,7 @@ def cache_document_from_bytes(data: bytes, filename: str) -> str:
     return str(filepath)
 
 
-def cleanup_document_cache(max_age_hours: int = 24) -> int:
+def cleanup_document_cache(max_age_hours: int = 48) -> int:
     """
     Delete cached documents older than *max_age_hours*.
 
@@ -648,7 +648,7 @@ def cleanup_document_cache(max_age_hours: int = 24) -> int:
     cache_dir = get_document_cache_dir()
     cutoff = time.time() - (max_age_hours * 3600)
     removed = 0
-    for f in cache_dir.iterdir():
+    for f in cache_dir.rglob("*"):
         if f.is_file() and f.stat().st_mtime < cutoff:
             try:
                 f.unlink()

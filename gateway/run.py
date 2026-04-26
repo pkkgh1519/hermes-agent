@@ -11042,13 +11042,13 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
 
         if tick_count % IMAGE_CACHE_EVERY == 0:
             try:
-                removed = cleanup_image_cache(max_age_hours=24)
+                removed = cleanup_image_cache(max_age_hours=48)
                 if removed:
                     logger.info("Image cache cleanup: removed %d stale file(s)", removed)
             except Exception as e:
                 logger.debug("Image cache cleanup error: %s", e)
             try:
-                removed = cleanup_document_cache(max_age_hours=24)
+                removed = cleanup_document_cache(max_age_hours=48)
                 if removed:
                     logger.info("Document cache cleanup: removed %d stale file(s)", removed)
             except Exception as e:
