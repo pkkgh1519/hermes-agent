@@ -4,7 +4,9 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.ppt_draft_state import (
+    add_pending_photo_batch,
     add_photo_batch,
+    assign_pending_photo_batches_to_tag,
     clear_session_draft_intake,
     get_session_draft_intake,
     set_latest_csv,
@@ -113,6 +115,48 @@ def test_add_photo_batches_preserves_order_and_clear():
     assert clear_session_draft_intake(session_key) is True
     assert get_session_draft_intake(session_key) is None
     assert clear_session_draft_intake(session_key) is False
+
+
+
+def test_assign_pending_photo_batches_to_tag_consumes_recent_untagged_batches():
+    session_key = "agent:main:telegram:group:-1003586456169:3"
+
+    add_pending_photo_batch(
+        session_key,
+        image_paths=[
+            "/home/hwan/.hermes/cache/images/pending-1.jpg",
+            "/home/hwan/.hermes/cache/images/pending-2.jpg",
+        ],
+        message_id="301",
+        uploaded_at=1710000100.0,
+    )
+    add_pending_photo_batch(
+        session_key,
+        image_paths=["/home/hwan/.hermes/cache/images/pending-3.jpg"],
+        message_id="302",
+        uploaded_at=1710000101.0,
+    )
+
+    assigned = assign_pending_photo_batches_to_tag(
+        session_key,
+        tag="offer_01",
+        message_id="tag-1",
+        tagged_at=1710000102.0,
+    )
+
+    assert [batch.tag for batch in assigned] == ["offer_01", "offer_01"]
+    assert [batch.image_paths for batch in assigned] == [
+        [
+            "/home/hwan/.hermes/cache/images/pending-1.jpg",
+            "/home/hwan/.hermes/cache/images/pending-2.jpg",
+        ],
+        ["/home/hwan/.hermes/cache/images/pending-3.jpg"],
+    ]
+
+    intake = get_session_draft_intake(session_key)
+    assert intake is not None
+    assert [batch.tag for batch in intake.photo_batches] == ["offer_01", "offer_01"]
+    assert intake.pending_photo_batches == []
 
 
 
@@ -232,6 +276,96 @@ async def test_prepare_inbound_text_records_photo_batch_from_offer_tag(tmp_path,
     assert len(intake.photo_batches) == 1
     assert intake.photo_batches[0].tag == "offer_01"
     assert intake.photo_batches[0].image_paths == [str(image_one), str(image_two)]
+    assert "offer_01(2)" in prepared
+
+
+@pytest.mark.asyncio
+async def test_prepare_inbound_text_tag_message_backfills_recent_untagged_photo_batches(tmp_path, monkeypatch):
+    source = _make_source()
+    session_key = build_session_key(source)
+    runner = _make_runner()
+
+    image_cache = tmp_path / "images"
+    image_cache.mkdir(parents=True)
+    image_one = image_cache / "1.jpg"
+    image_two = image_cache / "2.jpg"
+    image_three = image_cache / "3.jpg"
+    image_one.write_bytes(b"a")
+    image_two.write_bytes(b"b")
+    image_three.write_bytes(b"c")
+
+    monkeypatch.setattr("gateway.run.get_document_cache_dir", lambda: tmp_path / "documents")
+    monkeypatch.setattr("gateway.run.get_image_cache_dir", lambda: image_cache)
+
+    untagged_event = MessageEvent(
+        text="",
+        message_type=MessageType.PHOTO,
+        source=source,
+        message_id="photo-untagged",
+        media_urls=[str(image_one), str(image_two)],
+        media_types=["image/jpeg", "image/jpeg"],
+    )
+    tagged_event = MessageEvent(
+        text="offer_01",
+        message_type=MessageType.PHOTO,
+        source=source,
+        message_id="photo-tagged",
+        media_urls=[str(image_three)],
+        media_types=["image/jpeg"],
+    )
+
+    await runner._prepare_inbound_message_text(event=untagged_event, source=source, history=[])
+    prepared = await runner._prepare_inbound_message_text(event=tagged_event, source=source, history=[])
+
+    intake = get_session_draft_intake(session_key)
+    assert intake is not None
+    assert [batch.tag for batch in intake.photo_batches] == ["offer_01", "offer_01"]
+    assert intake.photo_batches[0].image_paths == [str(image_one), str(image_two)]
+    assert intake.photo_batches[1].image_paths == [str(image_three)]
+    assert intake.pending_photo_batches == []
+    assert "offer_01(3)" in prepared
+
+
+@pytest.mark.asyncio
+async def test_prepare_inbound_text_text_only_offer_tag_assigns_pending_photo_batches(tmp_path, monkeypatch):
+    source = _make_source()
+    session_key = build_session_key(source)
+    runner = _make_runner()
+
+    image_cache = tmp_path / "images"
+    image_cache.mkdir(parents=True)
+    image_one = image_cache / "1.jpg"
+    image_two = image_cache / "2.jpg"
+    image_one.write_bytes(b"a")
+    image_two.write_bytes(b"b")
+
+    monkeypatch.setattr("gateway.run.get_document_cache_dir", lambda: tmp_path / "documents")
+    monkeypatch.setattr("gateway.run.get_image_cache_dir", lambda: image_cache)
+
+    untagged_event = MessageEvent(
+        text="",
+        message_type=MessageType.PHOTO,
+        source=source,
+        message_id="photo-untagged",
+        media_urls=[str(image_one), str(image_two)],
+        media_types=["image/jpeg", "image/jpeg"],
+    )
+    tag_message = MessageEvent(
+        text="offer_01",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="tag-message",
+    )
+
+    await runner._prepare_inbound_message_text(event=untagged_event, source=source, history=[])
+    prepared = await runner._prepare_inbound_message_text(event=tag_message, source=source, history=[])
+
+    intake = get_session_draft_intake(session_key)
+    assert intake is not None
+    assert len(intake.photo_batches) == 1
+    assert intake.photo_batches[0].tag == "offer_01"
+    assert intake.photo_batches[0].image_paths == [str(image_one), str(image_two)]
+    assert intake.pending_photo_batches == []
     assert "offer_01(2)" in prepared
 
 

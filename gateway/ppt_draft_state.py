@@ -30,9 +30,17 @@ class DraftPhotoBatch:
 
 
 @dataclass(slots=True)
+class PendingDraftPhotoBatch:
+    image_paths: list[str]
+    message_id: str | None = None
+    uploaded_at: float = field(default_factory=time.time)
+
+
+@dataclass(slots=True)
 class SessionDraftIntake:
     latest_csv: DraftCsvUpload | None = None
     photo_batches: list[DraftPhotoBatch] = field(default_factory=list)
+    pending_photo_batches: list[PendingDraftPhotoBatch] = field(default_factory=list)
 
 
 def _normalize_session_key(session_key: str | None) -> str | None:
@@ -106,6 +114,64 @@ def add_photo_batch(
         if len(intake.photo_batches) > _MAX_PHOTO_BATCHES:
             intake.photo_batches = intake.photo_batches[-_MAX_PHOTO_BATCHES:]
     return deepcopy(entry)
+
+
+
+def add_pending_photo_batch(
+    session_key: str | None,
+    *,
+    image_paths: Iterable[str],
+    message_id: str | None = None,
+    uploaded_at: float | None = None,
+) -> PendingDraftPhotoBatch | None:
+    key = _normalize_session_key(session_key)
+    if not key:
+        return None
+    entry = PendingDraftPhotoBatch(
+        image_paths=_normalize_paths(image_paths),
+        message_id=str(message_id) if message_id is not None else None,
+        uploaded_at=float(uploaded_at) if uploaded_at is not None else time.time(),
+    )
+    with _STATE_LOCK:
+        intake = _SESSION_STATE.setdefault(key, SessionDraftIntake())
+        intake.pending_photo_batches.append(entry)
+        if len(intake.pending_photo_batches) > _MAX_PHOTO_BATCHES:
+            intake.pending_photo_batches = intake.pending_photo_batches[-_MAX_PHOTO_BATCHES:]
+    return deepcopy(entry)
+
+
+
+def assign_pending_photo_batches_to_tag(
+    session_key: str | None,
+    *,
+    tag: str,
+    message_id: str | None = None,
+    tagged_at: float | None = None,
+) -> list[DraftPhotoBatch]:
+    key = _normalize_session_key(session_key)
+    normalized_tag = str(tag or "").strip()
+    if not key or not normalized_tag:
+        return []
+
+    with _STATE_LOCK:
+        intake = _SESSION_STATE.setdefault(key, SessionDraftIntake())
+        pending = list(intake.pending_photo_batches)
+        intake.pending_photo_batches = []
+        assigned: list[DraftPhotoBatch] = []
+        for batch in pending:
+            tagged_batch = DraftPhotoBatch(
+                tag=normalized_tag,
+                image_paths=list(batch.image_paths),
+                message_id=str(message_id) if message_id is not None else batch.message_id,
+                uploaded_at=float(tagged_at) if tagged_at is not None else batch.uploaded_at,
+            )
+            intake.photo_batches.append(tagged_batch)
+            assigned.append(tagged_batch)
+        if len(intake.photo_batches) > _MAX_PHOTO_BATCHES:
+            intake.photo_batches = intake.photo_batches[-_MAX_PHOTO_BATCHES:]
+            assigned = intake.photo_batches[-len(assigned):] if assigned else []
+    return deepcopy(assigned)
+
 
 
 def clear_session_draft_intake(session_key: str | None) -> bool:

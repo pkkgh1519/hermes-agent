@@ -294,7 +294,9 @@ from gateway.platforms.base import (
     merge_pending_message_event,
 )
 from gateway.ppt_draft_state import (
+    add_pending_photo_batch,
     add_photo_batch,
+    assign_pending_photo_batches_to_tag,
     get_session_draft_intake,
     set_latest_csv,
 )
@@ -1075,10 +1077,17 @@ class GatewayRunner:
 
     def _record_ppt_draft_intake(self, event: MessageEvent, source: SessionSource) -> None:
         """Capture draft-generation CSV/photo uploads for the current session."""
-        if not getattr(event, "media_urls", None):
-            return
-
         session_key = self._session_key_for_source(source)
+        photo_tag = self._extract_ppt_draft_photo_tag(event.text)
+
+        if not getattr(event, "media_urls", None):
+            if photo_tag:
+                assign_pending_photo_batches_to_tag(
+                    session_key,
+                    tag=photo_tag,
+                    message_id=event.message_id,
+                )
+            return
 
         if event.message_type == MessageType.DOCUMENT:
             document_root = get_document_cache_dir()
@@ -1100,10 +1109,6 @@ class GatewayRunner:
                 )
                 break
 
-        photo_tag = self._extract_ppt_draft_photo_tag(event.text)
-        if not photo_tag:
-            return
-
         image_root = get_image_cache_dir()
         image_paths: list[str] = []
         for i, path in enumerate(event.media_urls):
@@ -1115,10 +1120,24 @@ class GatewayRunner:
                 continue
             image_paths.append(path)
 
-        if image_paths:
+        if not image_paths:
+            return
+
+        if photo_tag:
+            assign_pending_photo_batches_to_tag(
+                session_key,
+                tag=photo_tag,
+                message_id=event.message_id,
+            )
             add_photo_batch(
                 session_key,
                 tag=photo_tag,
+                image_paths=image_paths,
+                message_id=event.message_id,
+            )
+        else:
+            add_pending_photo_batch(
+                session_key,
                 image_paths=image_paths,
                 message_id=event.message_id,
             )
