@@ -384,9 +384,21 @@ def test_build_offer_overview_layout_wraps_long_headline_and_separates_rows():
     layout = draft_engine.build_offer_overview_layout(offer)
 
     assert "\n" in layout.headline_text
-    assert layout.price_row_top > layout.subtitle_top
+    assert layout.title_left == pytest.approx(0.894)
+    assert layout.title_width <= 6.35
+    assert layout.price_label_lefts == pytest.approx((7.473, 9.129, 10.579))
+    assert layout.price_row_top < layout.subtitle_top
     assert layout.note_row_top > layout.price_row_top
     assert layout.photos_top > layout.note_row_top
+
+
+
+def test_format_price_value_adds_commas_to_thousand_scale_amounts():
+    assert draft_engine.format_price_value("1100") == "1,100"
+    assert draft_engine.format_price_value("13000만원") == "13,000만원"
+    assert draft_engine.format_price_value("1,100") == "1,100"
+    assert draft_engine.format_price_value("20.4만원") == "20.4만원"
+    assert draft_engine.format_price_value("105") == "105"
 
 
 
@@ -477,10 +489,88 @@ def test_create_draft_pptx_uses_safe_overview_layout_for_multiple_long_title_off
             )
         )
         observed_price_tops.append(price_shape.top)
-        assert price_shape.top >= headline_shape.top + headline_shape.height
+        assert price_shape.left > headline_shape.left + headline_shape.width
+        assert note_shape.left == price_shape.left
         assert note_shape.top > price_shape.top
 
     assert len(set(observed_price_tops)) == 1
+
+
+
+def test_create_draft_pptx_places_overview_pricing_on_right_and_formats_amounts(tmp_path):
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    csv_path = _write_csv(
+        tmp_path / "offers.csv",
+        REQUIRED_HEADER
+        + _offer_csv_row(
+            "offer_01",
+            name="동성빌딩",
+            location="성수동 2가 277-50 / 성수역 도보 4분",
+            size_floor="4층 / 14평",
+            price="보증금 1100 / 월세 105 / 관리비 16000만원",
+            points="주차 가능; 공실; 화물 EV 가능",
+        )
+        + "\n",
+    )
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    payload = build_draft_payload(
+        csv_path,
+        photo_batches=[
+            DraftPhotoBatch(
+                tag="offer_01",
+                image_paths=[
+                    _write_image(image_dir / "hero.png", size=(1600, 900), color=(40, 70, 120)),
+                    _write_image(image_dir / "map.png", size=(900, 1400), color=(230, 230, 230)),
+                ],
+            )
+        ],
+    )
+
+    output_path = tmp_path / "draft-overview-price-right.pptx"
+    create_draft_pptx(payload, output_path)
+
+    prs = Presentation(str(output_path))
+    overview_slide = prs.slides[3]
+
+    def shape_with_text(text: str):
+        return next(
+            shape
+            for shape in overview_slide.shapes
+            if getattr(shape, "has_text_frame", False)
+            and any(paragraph.text.strip() == text for paragraph in shape.text_frame.paragraphs)
+        )
+
+    headline_shape = next(
+        shape
+        for shape in overview_slide.shapes
+        if getattr(shape, "has_text_frame", False)
+        and any("동성빌딩" in paragraph.text for paragraph in shape.text_frame.paragraphs)
+    )
+    deposit_label = shape_with_text("보증금")
+    rent_label = shape_with_text("월임차료")
+    maintenance_label = shape_with_text("관리비")
+    deposit_value = shape_with_text("1,100")
+    rent_value = shape_with_text("105")
+    maintenance_value = shape_with_text("16,000만원")
+    note_label = shape_with_text("비고")
+
+    assert headline_shape.left == Inches(0.894)
+    assert headline_shape.width <= Inches(6.35)
+    assert deposit_label.left == Inches(7.473)
+    assert rent_label.left == Inches(9.129)
+    assert maintenance_label.left == Inches(10.579)
+    assert note_label.left == Inches(7.473)
+    assert deposit_value.left > deposit_label.left + deposit_label.width
+    assert rent_value.left > rent_label.left + rent_label.width
+    assert maintenance_value.left > maintenance_label.left + maintenance_label.width
+    assert not any(
+        getattr(shape, "has_text_frame", False)
+        and any(paragraph.text.strip() in {"1100", "16000만원"} for paragraph in shape.text_frame.paragraphs)
+        for shape in overview_slide.shapes
+    )
 
 
 

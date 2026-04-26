@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import math
 import posixpath
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -102,11 +103,18 @@ class DeckRenderPlan:
 @dataclass(slots=True)
 class OfferOverviewLayout:
     headline_text: str
+    title_left: float
     title_top: float
+    title_width: float
     title_height: float
     title_font_size: int
+    subtitle_left: float
     subtitle_top: float
+    subtitle_width: float
     price_row_top: float
+    price_label_lefts: tuple[float, float, float]
+    note_label_left: float
+    note_value_left: float
     note_row_top: float
     photos_top: float
     photo_height: float
@@ -503,19 +511,44 @@ def _wrap_offer_headline(text: str, *, target_chars: int = 30, min_split: int = 
 
 
 
+def format_price_value(value: str) -> str:
+    """Add thousands separators to integer money amounts while preserving units."""
+    text = str(value or "").strip()
+
+    def replace_number(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        digits = raw.replace(",", "")
+        if not digits.isdigit():
+            return raw
+        number = int(digits)
+        if number < 1000:
+            return raw
+        return f"{number:,}"
+
+    return re.sub(r"(?<![\d.])\d[\d,]*(?![\d.])", replace_number, text)
+
+
+
 def build_offer_overview_layout(offer: ParsedOffer) -> OfferOverviewLayout:
-    headline = _wrap_offer_headline(compose_offer_headline(offer))
+    headline = _wrap_offer_headline(compose_offer_headline(offer), target_chars=28, min_split=16, max_split=36)
     is_wrapped = "\n" in headline
     return OfferOverviewLayout(
         headline_text=headline,
-        title_top=1.55,
-        title_height=0.82,
+        title_left=0.894,
+        title_top=1.58 if is_wrapped else 1.792,
+        title_width=6.35,
+        title_height=0.78 if is_wrapped else 0.404,
         title_font_size=20 if is_wrapped else 22,
-        subtitle_top=2.34,
-        price_row_top=2.66,
-        note_row_top=3.02,
-        photos_top=3.38,
-        photo_height=3.52,
+        subtitle_left=0.894,
+        subtitle_top=2.34 if is_wrapped else 2.128,
+        subtitle_width=5.042,
+        price_row_top=1.673,
+        price_label_lefts=(7.473, 9.129, 10.579),
+        note_label_left=7.473,
+        note_value_left=8.406,
+        note_row_top=2.107,
+        photos_top=2.705,
+        photo_height=4.795,
     )
 
 
@@ -824,7 +857,7 @@ def create_draft_pptx(
                     value = segment[len(key):].strip(" :")
                     break
             if value:
-                results.append((label, value))
+                results.append((label, format_price_value(value)))
         if results:
             deduped: list[tuple[str, str]] = []
             seen: set[str] = set()
@@ -834,7 +867,7 @@ def create_draft_pptx(
                 seen.add(label)
                 deduped.append((label, value))
             return deduped
-        return [("가격", str(price_text or "-").strip() or "-")]
+        return [("가격", format_price_value(str(price_text or "-").strip() or "-"))]
 
     def price_component_map(price_text: str) -> dict[str, str]:
         return {label: value for label, value in parse_price_components(price_text)}
@@ -977,9 +1010,14 @@ def create_draft_pptx(
         layout = build_offer_overview_layout(offer)
 
         add_header_band(slide, f"02. 매물 소개 ({offer_index})")
-        add_small_dots(slide, left=0.92, top=1.38)
+        add_small_dots(slide, left=0.92, top=1.50)
 
-        name_box = slide.shapes.add_textbox(Inches(0.9), Inches(layout.title_top), Inches(11.6), Inches(layout.title_height))
+        name_box = slide.shapes.add_textbox(
+            Inches(layout.title_left),
+            Inches(layout.title_top),
+            Inches(layout.title_width),
+            Inches(layout.title_height),
+        )
         name_frame = name_box.text_frame
         name_frame.clear()
         name_frame.word_wrap = True
@@ -991,7 +1029,12 @@ def create_draft_pptx(
             name_p.text = line
             style_paragraph(name_p, size=layout.title_font_size, color=COLOR_TEXT, bold=True)
 
-        subtitle_box = slide.shapes.add_textbox(Inches(0.9), Inches(layout.subtitle_top), Inches(5.8), Inches(0.34))
+        subtitle_box = slide.shapes.add_textbox(
+            Inches(layout.subtitle_left),
+            Inches(layout.subtitle_top),
+            Inches(layout.subtitle_width),
+            Inches(0.34),
+        )
         subtitle_frame = subtitle_box.text_frame
         subtitle_frame.clear()
         subtitle_frame.margin_left = 0
@@ -1000,16 +1043,22 @@ def create_draft_pptx(
         subtitle_p.text = format_size_floor(offer.size_floor)
         style_paragraph(subtitle_p, size=15, color=COLOR_MUTED, bold=True)
 
-        cursor = 0.9
-        for label, value in parse_price_components(offer.price)[:3]:
-            cursor = add_label_value_pair(slide, label, value, left=cursor, top=layout.price_row_top)
+        for left, (label, value) in zip(layout.price_label_lefts, parse_price_components(offer.price)[:3], strict=False):
+            add_label_value_pair(
+                slide,
+                label,
+                value,
+                left=left,
+                top=layout.price_row_top,
+                label_width=0.855,
+            )
 
         if offer.points:
             feature_pill = slide.shapes.add_shape(
                 MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE,
-                Inches(0.9),
+                Inches(layout.note_label_left),
                 Inches(layout.note_row_top),
-                Inches(0.82),
+                Inches(0.855),
                 Inches(0.34),
             )
             feature_pill.fill.solid()
@@ -1017,11 +1066,18 @@ def create_draft_pptx(
             feature_pill.line.color.rgb = rgb(COLOR_PRIMARY_DARK)
             feature_frame = feature_pill.text_frame
             feature_frame.clear()
+            feature_frame.margin_left = Pt(6)
+            feature_frame.margin_right = Pt(6)
             feature_label = feature_frame.paragraphs[0]
             feature_label.text = "비고"
             style_paragraph(feature_label, size=10, color=COLOR_WHITE, bold=True, alignment=PP_ALIGN.CENTER)
 
-            feature_box = slide.shapes.add_textbox(Inches(1.82), Inches(layout.note_row_top - 0.02), Inches(10.2), Inches(0.5))
+            feature_box = slide.shapes.add_textbox(
+                Inches(layout.note_value_left),
+                Inches(layout.note_row_top - 0.02),
+                Inches(4.35),
+                Inches(0.5),
+            )
             feature_text_frame = feature_box.text_frame
             feature_text_frame.clear()
             feature_text_frame.word_wrap = True
