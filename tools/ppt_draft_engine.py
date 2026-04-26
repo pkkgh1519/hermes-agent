@@ -30,7 +30,7 @@ _XLSX_NS = {
 _INTRO_ASSET_DIR = Path(__file__).resolve().parents[1] / "assets" / "ppt_draft"
 _FIXED_INTRO_PAGE_1 = _INTRO_ASSET_DIR / "lynchpin_intro_page1_unified.png"
 _FIXED_INTRO_PAGE_2 = _INTRO_ASSET_DIR / "lynchpin_intro_page2_unified.png"
-_HEADER_LOGO_ASSET = _INTRO_ASSET_DIR / "linchpin_header_logo.emf"
+_HEADER_LOGO_ASSET = _INTRO_ASSET_DIR / "linchpin_header_logo.png"
 
 
 class DraftInputError(Exception):

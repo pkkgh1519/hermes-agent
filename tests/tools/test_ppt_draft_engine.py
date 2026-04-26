@@ -784,8 +784,11 @@ def test_create_draft_pptx_repeats_sample_pptx_header_asset_across_content_slide
     from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE, MSO_SHAPE_TYPE
     from pptx.util import Inches, Pt
 
-    header_logo_asset = Path(__file__).resolve().parents[2] / "assets" / "ppt_draft" / "linchpin_header_logo.emf"
+    header_logo_asset = Path(__file__).resolve().parents[2] / "assets" / "ppt_draft" / "linchpin_header_logo.png"
     assert header_logo_asset.exists()
+    with Image.open(header_logo_asset) as logo_image:
+        assert logo_image.format == "PNG"
+        assert logo_image.width > logo_image.height
 
     csv_path = _write_csv(
         tmp_path / "offers.csv",
@@ -861,10 +864,19 @@ def test_create_draft_pptx_repeats_sample_pptx_header_asset_across_content_slide
         )
         assert logo.width == Inches(2.644)
         assert logo.height == Inches(0.455)
+        assert logo.crop_left == 0
+        assert logo.crop_right == 0
+        assert logo.crop_top == 0
+        assert logo.crop_bottom == 0
 
         assert not any(
             getattr(shape, "has_text_frame", False)
             and any(paragraph.text == "LINCHPIN" for paragraph in shape.text_frame.paragraphs)
+            for shape in slide.shapes
+        )
+        assert not any(
+            getattr(shape, "has_text_frame", False)
+            and any(paragraph.text == "REAL ESTATE AGENCY" for paragraph in shape.text_frame.paragraphs)
             for shape in slide.shapes
         )
 
