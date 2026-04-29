@@ -1066,6 +1066,8 @@ class HonchoMemoryProvider(MemoryProvider):
             return
         if not self._manager or not self._session_key:
             return
+        if self._config and not self._config.save_messages:
+            return
 
         msg_limit = self._config.message_max_chars if self._config else 25000
 

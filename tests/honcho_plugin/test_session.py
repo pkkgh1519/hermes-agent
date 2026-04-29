@@ -526,6 +526,25 @@ class TestConcludeToolDispatch:
         provider._manager.delete_conclusion.assert_not_called()
 
 
+class TestSaveMessagesConfig:
+    def test_save_messages_false_skips_raw_turn_sync(self):
+        """saveMessages=false must prevent raw user/assistant turns from syncing to Honcho."""
+        provider = HonchoMemoryProvider()
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._config = SimpleNamespace(
+            message_max_chars=25000,
+            save_messages=False,
+        )
+
+        provider.sync_turn("private user text", "private assistant text")
+
+        if provider._sync_thread and provider._sync_thread.is_alive():
+            provider._sync_thread.join(timeout=2.0)
+        provider._manager.get_or_create.assert_not_called()
+        provider._manager._flush_session.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Message chunking
 # ---------------------------------------------------------------------------
