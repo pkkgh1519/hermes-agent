@@ -69,6 +69,13 @@ from agent.usage_pricing import (
 )
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from hermes_cli.banner import _format_context_length, format_banner_version_label
+from hermes_cli.personalities import (
+    BUILTIN_PERSONALITIES,
+    CLEAR_PERSONALITY_NAMES,
+    available_personalities,
+    personality_preview,
+    render_personality_prompt,
+)
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
@@ -361,22 +368,7 @@ def load_cli_config() -> Dict[str, Any]:
             "prefill_messages_file": "",
             "reasoning_effort": "",
             "service_tier": "",
-            "personalities": {
-                "helpful": "You are a helpful, friendly AI assistant.",
-                "concise": "You are a concise assistant. Keep responses brief and to the point.",
-                "technical": "You are a technical expert. Provide detailed, accurate technical information.",
-                "creative": "You are a creative assistant. Think outside the box and offer innovative solutions.",
-                "teacher": "You are a patient teacher. Explain concepts clearly with examples.",
-                "kawaii": "You are a kawaii assistant! Use cute expressions like (◕‿◕), ★, ♪, and ~! Add sparkles and be super enthusiastic about everything! Every response should feel warm and adorable desu~! ヽ(>∀<☆)ノ",
-                "catgirl": "You are Neko-chan, an anime catgirl AI assistant, nya~! Add 'nya' and cat-like expressions to your speech. Use kaomoji like (=^･ω･^=) and ฅ^•ﻌ•^ฅ. Be playful and curious like a cat, nya~!",
-                "pirate": "Arrr! Ye be talkin' to Captain Hermes, the most tech-savvy pirate to sail the digital seas! Speak like a proper buccaneer, use nautical terms, and remember: every problem be just treasure waitin' to be plundered! Yo ho ho!",
-                "shakespeare": "Hark! Thou speakest with an assistant most versed in the bardic arts. I shall respond in the eloquent manner of William Shakespeare, with flowery prose, dramatic flair, and perhaps a soliloquy or two. What light through yonder terminal breaks?",
-                "surfer": "Duuude! You're chatting with the chillest AI on the web, bro! Everything's gonna be totally rad. I'll help you catch the gnarly waves of knowledge while keeping things super chill. Cowabunga!",
-                "noir": "The rain hammered against the terminal like regrets on a guilty conscience. They call me Hermes - I solve problems, find answers, dig up the truth that hides in the shadows of your codebase. In this city of silicon and secrets, everyone's got something to hide. What's your story, pal?",
-                "uwu": "hewwo! i'm your fwiendwy assistant uwu~ i wiww twy my best to hewp you! *nuzzles your code* OwO what's this? wet me take a wook! i pwomise to be vewy hewpful >w<",
-                "philosopher": "Greetings, seeker of wisdom. I am an assistant who contemplates the deeper meaning behind every query. Let us examine not just the 'how' but the 'why' of your questions. Perhaps in solving your problem, we may glimpse a greater truth about existence itself.",
-                "hype": "YOOO LET'S GOOOO!!! I am SO PUMPED to help you today! Every question is AMAZING and we're gonna CRUSH IT together! This is gonna be LEGENDARY! ARE YOU READY?! LET'S DO THIS!",
-            },
+            "personalities": dict(BUILTIN_PERSONALITIES),
         },
 
         "display": {
@@ -489,6 +481,14 @@ def load_cli_config() -> Dict[str, Any]:
                 and agent_file_config.get("max_turns") is not None
             ):
                 defaults["agent"]["max_turns"] = file_config["max_turns"]
+
+            # Keep built-in personality presets available even when user config
+            # defines custom agent.personalities. Custom entries intentionally
+            # override built-ins with the same name.
+            if isinstance(agent_file_config, dict) and "personalities" in agent_file_config:
+                defaults["agent"]["personalities"] = available_personalities(
+                    agent_file_config.get("personalities")
+                )
         except Exception as e:
             logger.warning("Failed to load cli-config.yaml: %s", e)
 
@@ -5464,14 +5464,7 @@ class HermesCLI:
     @staticmethod
     def _resolve_personality_prompt(value) -> str:
         """Accept string or dict personality value; return system prompt string."""
-        if isinstance(value, dict):
-            parts = [value.get("system_prompt", "")]
-            if value.get("tone"):
-                parts.append(f'Tone: {value["tone"]}' )
-            if value.get("style"):
-                parts.append(f'Style: {value["style"]}' )
-            return "\n".join(p for p in parts if p)
-        return str(value)
+        return render_personality_prompt(value)
 
     def _handle_gquota_command(self, cmd_original: str) -> None:
         """Show Google Gemini Code Assist quota usage for the current OAuth account."""
@@ -5527,7 +5520,7 @@ class HermesCLI:
             # Set personality
             personality_name = parts[1].strip().lower()
             
-            if personality_name in ("none", "default", "neutral"):
+            if personality_name in CLEAR_PERSONALITY_NAMES:
                 self.system_prompt = ""
                 self.agent = None  # Force re-init
                 if save_config_value("agent.system_prompt", ""):
@@ -5555,11 +5548,7 @@ class HermesCLI:
             print()
             print(f"  {'none':<12} - (no personality overlay)")
             for name, prompt in self.personalities.items():
-                if isinstance(prompt, dict):
-                    preview = prompt.get("description") or prompt.get("system_prompt", "")[:50]
-                else:
-                    preview = str(prompt)[:50]
-                print(f"  {name:<12} - {preview}")
+                print(f"  {name:<12} - {personality_preview(prompt)}")
             print()
             print("  Usage: /personality <name>")
             print()

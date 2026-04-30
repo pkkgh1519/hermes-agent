@@ -5960,7 +5960,12 @@ class GatewayRunner:
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
         import yaml
-        from hermes_constants import display_hermes_home
+        from hermes_cli.personalities import (
+            CLEAR_PERSONALITY_NAMES,
+            available_personalities,
+            personality_preview,
+            render_personality_prompt,
+        )
 
         args = event.get_command_args().strip().lower()
         config_path = _hermes_home / 'config.yaml'
@@ -5969,40 +5974,25 @@ class GatewayRunner:
             if config_path.exists():
                 with open(config_path, 'r', encoding="utf-8") as f:
                     config = yaml.safe_load(f) or {}
-                personalities = config.get("agent", {}).get("personalities", {})
+                custom_personalities = config.get("agent", {}).get("personalities", {})
             else:
                 config = {}
-                personalities = {}
+                custom_personalities = {}
         except Exception:
             config = {}
-            personalities = {}
+            custom_personalities = {}
 
-        if not personalities:
-            return f"No personalities configured in `{display_hermes_home()}/config.yaml`"
+        personalities = available_personalities(custom_personalities)
 
         if not args:
             lines = ["🎭 **Available Personalities**\n"]
             lines.append("• `none` — (no personality overlay)")
             for name, prompt in personalities.items():
-                if isinstance(prompt, dict):
-                    preview = prompt.get("description") or prompt.get("system_prompt", "")[:50]
-                else:
-                    preview = prompt[:50] + "..." if len(prompt) > 50 else prompt
-                lines.append(f"• `{name}` — {preview}")
+                lines.append(f"• `{name}` — {personality_preview(prompt)}")
             lines.append("\nUsage: `/personality <name>`")
             return "\n".join(lines)
 
-        def _resolve_prompt(value):
-            if isinstance(value, dict):
-                parts = [value.get("system_prompt", "")]
-                if value.get("tone"):
-                    parts.append(f'Tone: {value["tone"]}')
-                if value.get("style"):
-                    parts.append(f'Style: {value["style"]}')
-                return "\n".join(p for p in parts if p)
-            return str(value)
-
-        if args in ("none", "default", "neutral"):
+        if args in CLEAR_PERSONALITY_NAMES:
             try:
                 if "agent" not in config or not isinstance(config.get("agent"), dict):
                     config["agent"] = {}
@@ -6013,7 +6003,7 @@ class GatewayRunner:
             self._ephemeral_system_prompt = ""
             return "🎭 Personality cleared — using base agent behavior.\n_(takes effect on next message)_"
         elif args in personalities:
-            new_prompt = _resolve_prompt(personalities[args])
+            new_prompt = render_personality_prompt(personalities[args])
 
             # Write to config.yaml, same pattern as CLI save_config_value.
             try:

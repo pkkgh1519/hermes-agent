@@ -154,7 +154,39 @@ class TestGatewayPersonalityNone:
             event = self._make_event("")
             result = await runner._handle_personality_command(event)
 
-        assert result == "No personalities configured in `~/.hermes/profiles/coder/config.yaml`"
+        assert "No personalities configured" not in result
+        assert "`concise`" in result
+        assert "`pirate`" in result
+
+    @pytest.mark.asyncio
+    async def test_builtin_personality_sets_prompt_without_custom_config(self, tmp_path):
+        runner = self._make_runner(personalities={})
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"agent": {"personalities": {}}}))
+
+        with patch("gateway.run._hermes_home", tmp_path):
+            event = self._make_event("concise")
+            result = await runner._handle_personality_command(event)
+
+        saved = yaml.safe_load(config_file.read_text())
+        assert "Personality set" in result
+        assert "concise assistant" in runner._ephemeral_system_prompt
+        assert "concise assistant" in saved["agent"]["system_prompt"]
+
+    @pytest.mark.asyncio
+    async def test_none_clears_prompt_without_custom_personalities(self, tmp_path):
+        runner = self._make_runner(personalities={})
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"agent": {"personalities": {}, "system_prompt": "kawaii"}}))
+
+        with patch("gateway.run._hermes_home", tmp_path):
+            event = self._make_event("none")
+            result = await runner._handle_personality_command(event)
+
+        saved = yaml.safe_load(config_file.read_text())
+        assert "cleared" in result.lower()
+        assert runner._ephemeral_system_prompt == ""
+        assert saved["agent"]["system_prompt"] == ""
 
 
 class TestPersonalityDictFormat:

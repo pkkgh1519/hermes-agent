@@ -995,17 +995,7 @@ def _resolve_personality_prompt(cfg: dict) -> str:
     name = (cfg.get("display", {}).get("personality", "") or "").strip().lower()
     if not name or name in ("default", "none", "neutral"):
         return ""
-    try:
-        from cli import load_cli_config
-
-        personalities = load_cli_config().get("agent", {}).get("personalities", {})
-    except Exception:
-        try:
-            from hermes_cli.config import load_config as _load_full_cfg
-
-            personalities = _load_full_cfg().get("agent", {}).get("personalities", {})
-        except Exception:
-            personalities = cfg.get("agent", {}).get("personalities", {})
+    personalities = _available_personalities(cfg)
     pval = personalities.get(name)
     if pval is None:
         return ""
@@ -1013,29 +1003,17 @@ def _resolve_personality_prompt(cfg: dict) -> str:
 
 
 def _render_personality_prompt(value) -> str:
-    if isinstance(value, dict):
-        parts = [value.get("system_prompt", "")]
-        if value.get("tone"):
-            parts.append(f'Tone: {value["tone"]}')
-        if value.get("style"):
-            parts.append(f'Style: {value["style"]}')
-        return "\n".join(p for p in parts if p)
-    return str(value)
+    from hermes_cli.personalities import render_personality_prompt
+
+    return render_personality_prompt(value)
 
 
 def _available_personalities(cfg: dict | None = None) -> dict:
-    try:
-        from cli import load_cli_config
+    from hermes_cli.personalities import available_personalities
 
-        return load_cli_config().get("agent", {}).get("personalities", {}) or {}
-    except Exception:
-        try:
-            from hermes_cli.config import load_config as _load_full_cfg
-
-            return _load_full_cfg().get("agent", {}).get("personalities", {}) or {}
-        except Exception:
-            cfg = cfg or _load_cfg()
-            return cfg.get("agent", {}).get("personalities", {}) or {}
+    cfg = cfg or _load_cfg()
+    custom = cfg.get("agent", {}).get("personalities", {}) if isinstance(cfg, dict) else {}
+    return available_personalities(custom)
 
 
 def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str]:
