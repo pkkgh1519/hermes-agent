@@ -42,3 +42,31 @@ class TestAtomicYamlWrite:
         text = target.read_text(encoding="utf-8")
         assert "key: value" in text
         assert "# comment" in text
+
+    def test_preserves_unicode_text_without_escape_sequences(self, tmp_path):
+        target = tmp_path / "config.yaml"
+        data = {
+            "agent": {
+                "system_prompt": "## 한국어 출력 품질\n\nBB쨩 말투도 읽기 좋게 유지한다♡"
+            }
+        }
+
+        atomic_yaml_write(target, data)
+
+        text = target.read_text(encoding="utf-8")
+        assert "한국어 출력 품질" in text
+        assert "BB쨩" in text
+        assert "\\u" not in text
+        assert yaml.safe_load(text) == data
+
+    def test_writes_multiline_strings_as_literal_blocks(self, tmp_path):
+        target = tmp_path / "config.yaml"
+        data = {"agent": {"system_prompt": "line one\nline two"}}
+
+        atomic_yaml_write(target, data)
+
+        text = target.read_text(encoding="utf-8")
+        assert "system_prompt: |-" in text or "system_prompt: |" in text
+        assert "line one" in text
+        assert "line two" in text
+        assert yaml.safe_load(text) == data
