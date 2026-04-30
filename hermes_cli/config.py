@@ -389,6 +389,10 @@ DEFAULT_CONFIG = {
         # (60+ tool iterations with tiny output) before users assume the
         # bot is dead and /restart.
         "gateway_notify_interval": 180,
+        # Optional always-on base prompt and personality overlay selection.
+        "system_prompt": "",
+        "active_personality": "",
+        "personalities": {},
     },
     
     "terminal": {

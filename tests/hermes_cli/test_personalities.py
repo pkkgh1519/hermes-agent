@@ -53,6 +53,53 @@ def test_render_personality_prompt_supports_dict_format():
     assert "Style: concise" in prompt
 
 
+def test_normalize_personality_name_clears_none_aliases():
+    from hermes_cli.personalities import normalize_personality_name
+
+    assert normalize_personality_name("") == ""
+    assert normalize_personality_name("none") == ""
+    assert normalize_personality_name("default") == ""
+    assert normalize_personality_name("neutral") == ""
+    assert normalize_personality_name("  BBChan  ") == "bbchan"
+
+
+def test_compose_system_prompt_preserves_base_when_overlay_empty():
+    from hermes_cli.personalities import compose_system_prompt
+
+    assert compose_system_prompt("base rules", "") == "base rules"
+
+
+def test_resolve_active_personality_prompt_uses_agent_active_not_display():
+    from hermes_cli.personalities import resolve_active_personality_prompt
+    cfg = {
+        "display": {"personality": "kawaii"},
+        "agent": {
+            "active_personality": "",
+            "personalities": {"bbchan": "BB overlay"},
+        },
+    }
+
+    name, prompt = resolve_active_personality_prompt(cfg)
+
+    assert name == ""
+    assert prompt == ""
+
+
+def test_compose_config_system_prompt_combines_base_and_normalized_active_overlay():
+    from hermes_cli.personalities import compose_config_system_prompt
+
+    cfg = {
+        "display": {"personality": "kawaii"},
+        "agent": {
+            "system_prompt": "base rules",
+            "active_personality": "  BBCHAN  ",
+            "personalities": {"bbchan": "BB overlay"},
+        },
+    }
+
+    assert compose_config_system_prompt(cfg) == "base rules\n\nBB overlay"
+
+
 def test_cli_config_merges_custom_personalities_with_builtins(tmp_path, monkeypatch):
     import cli
 

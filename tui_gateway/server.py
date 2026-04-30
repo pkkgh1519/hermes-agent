@@ -991,15 +991,11 @@ def _wire_callbacks(sid: str):
 
 
 def _resolve_personality_prompt(cfg: dict) -> str:
-    """Resolve the active personality into a system prompt string."""
-    name = (cfg.get("display", {}).get("personality", "") or "").strip().lower()
-    if not name or name in ("default", "none", "neutral"):
-        return ""
-    personalities = _available_personalities(cfg)
-    pval = personalities.get(name)
-    if pval is None:
-        return ""
-    return _render_personality_prompt(pval)
+    """Resolve the active personality overlay into a system prompt string."""
+    from hermes_cli.personalities import resolve_active_personality_prompt
+
+    _, prompt = resolve_active_personality_prompt(cfg)
+    return prompt
 
 
 def _render_personality_prompt(value) -> str:
@@ -1123,9 +1119,11 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     cfg = _load_cfg()
-    system_prompt = cfg.get("agent", {}).get("system_prompt", "") or ""
-    if not system_prompt:
-        system_prompt = _resolve_personality_prompt(cfg)
+    from hermes_cli.personalities import compose_system_prompt
+
+    base_prompt = cfg.get("agent", {}).get("system_prompt", "") or ""
+    personality_prompt = _resolve_personality_prompt(cfg)
+    system_prompt = compose_system_prompt(base_prompt, personality_prompt)
     runtime = resolve_runtime_provider(requested=None)
     return AIAgent(
         model=_resolve_model(),
@@ -2574,9 +2572,13 @@ def _(rid, params: dict) -> dict:
                 _save_cfg(cfg)
             elif key == "personality":
                 sid_key = params.get("session_id", "")
-                pname, new_prompt = _validate_personality(str(value or ""), cfg)
+                pname, overlay_prompt = _validate_personality(str(value or ""), cfg)
+                from hermes_cli.personalities import compose_system_prompt
+
+                base_prompt = cfg.get("agent", {}).get("system_prompt", "") or ""
+                new_prompt = compose_system_prompt(base_prompt, overlay_prompt)
                 _write_config_key("display.personality", pname)
-                _write_config_key("agent.system_prompt", new_prompt)
+                _write_config_key("agent.active_personality", pname)
                 nv = str(value or "default")
                 history_reset, info = _apply_personality_to_session(
                     sid_key, session, new_prompt

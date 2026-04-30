@@ -73,8 +73,10 @@ from hermes_cli.personalities import (
     BUILTIN_PERSONALITIES,
     CLEAR_PERSONALITY_NAMES,
     available_personalities,
+    compose_system_prompt,
     personality_preview,
     render_personality_prompt,
+    resolve_active_personality_prompt,
 )
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -365,6 +367,7 @@ def load_cli_config() -> Dict[str, Any]:
             "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)
             "verbose": False,
             "system_prompt": "",
+            "active_personality": "",
             "prefill_messages_file": "",
             "reasoning_effort": "",
             "service_tier": "",
@@ -1972,12 +1975,14 @@ class HermesCLI:
         # AGENTS.md/SOUL.md/.cursorrules and persistent memory are not loaded.
         self.ignore_rules = ignore_rules or os.environ.get("HERMES_IGNORE_RULES") == "1"
         
-        # Ephemeral system prompt: env var takes precedence, then config
+        # Ephemeral system prompt: env var takes precedence as a full override.
+        self.base_system_prompt = CLI_CONFIG["agent"].get("system_prompt", "") or ""
+        self.personalities = CLI_CONFIG["agent"].get("personalities", {})
+        _, _active_overlay = resolve_active_personality_prompt(CLI_CONFIG)
         self.system_prompt = (
             os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
-            or CLI_CONFIG["agent"].get("system_prompt", "")
+            or compose_system_prompt(self.base_system_prompt, _active_overlay)
         )
-        self.personalities = CLI_CONFIG["agent"].get("personalities", {})
         
         # Ephemeral prefill messages (few-shot priming, never persisted)
         self.prefill_messages = _load_prefill_messages(
@@ -5521,21 +5526,26 @@ class HermesCLI:
             personality_name = parts[1].strip().lower()
             
             if personality_name in CLEAR_PERSONALITY_NAMES:
-                self.system_prompt = ""
+                self.system_prompt = self.base_system_prompt
                 self.agent = None  # Force re-init
-                if save_config_value("agent.system_prompt", ""):
-                    print("(^_^)b Personality cleared (saved to config)")
+                saved = save_config_value("agent.active_personality", "")
+                save_config_value("display.personality", "")
+                if saved:
+                    print("(^_^)b Personality overlay cleared (saved to config)")
                 else:
-                    print("(^_^) Personality cleared (session only)")
-                print("  No personality overlay — using base agent behavior.")
+                    print("(^_^) Personality overlay cleared (session only)")
+                print("  Base system prompt remains active.")
             elif personality_name in self.personalities:
-                self.system_prompt = self._resolve_personality_prompt(self.personalities[personality_name])
+                overlay_prompt = self._resolve_personality_prompt(self.personalities[personality_name])
+                self.system_prompt = compose_system_prompt(self.base_system_prompt, overlay_prompt)
                 self.agent = None  # Force re-init
-                if save_config_value("agent.system_prompt", self.system_prompt):
+                saved = save_config_value("agent.active_personality", personality_name)
+                save_config_value("display.personality", personality_name)
+                if saved:
                     print(f"(^_^)b Personality set to '{personality_name}' (saved to config)")
                 else:
                     print(f"(^_^) Personality set to '{personality_name}' (session only)")
-                print(f"  \"{self.system_prompt[:60]}{'...' if len(self.system_prompt) > 60 else ''}\"")
+                print(f"  \"{overlay_prompt[:60]}{'...' if len(overlay_prompt) > 60 else ''}\"")
             else:
                 print(f"(._.) Unknown personality: {personality_name}")
                 print(f"  Available: none, {', '.join(self.personalities.keys())}")

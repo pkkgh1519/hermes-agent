@@ -391,7 +391,8 @@ def test_config_set_personality_resets_history_and_returns_info(monkeypatch):
     )
     monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
     monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
-    monkeypatch.setattr(server, "_write_config_key", lambda path, value: None)
+    writes = []
+    monkeypatch.setattr(server, "_write_config_key", lambda path, value: writes.append((path, value)))
 
     resp = server.handle_request(
         {
@@ -406,6 +407,8 @@ def test_config_set_personality_resets_history_and_returns_info(monkeypatch):
     assert session["history"] == []
     assert session["history_version"] == 5
     assert ("session.info", "sid", {"model": "x"}) in emits
+    assert ("agent.active_personality", "helpful") in writes
+    assert all(path != "agent.system_prompt" for path, _ in writes)
 
 
 def test_session_compress_uses_compress_helper(monkeypatch):

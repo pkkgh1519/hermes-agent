@@ -49,6 +49,71 @@ def render_personality_prompt(value: Any) -> str:
     return str(value)
 
 
+def normalize_personality_name(value: str | None) -> str:
+    """Normalize a user/config personality name.
+
+    Empty values and clear aliases mean "no personality overlay".
+    """
+    name = str(value or "").strip().lower()
+    return "" if name in CLEAR_PERSONALITY_NAMES or not name else name
+
+
+def resolve_personality_prompt(name: str | None, custom: Mapping[str, Any] | None = None) -> str:
+    """Resolve a personality name into its rendered prompt.
+
+    Clear aliases return an empty overlay. Unknown names raise ``KeyError`` so
+    command handlers can display their existing "unknown personality" messages.
+    """
+    normalized = normalize_personality_name(name)
+    if not normalized:
+        return ""
+    personalities = available_personalities(custom)
+    if normalized not in personalities:
+        raise KeyError(normalized)
+    return render_personality_prompt(personalities[normalized])
+
+
+def compose_system_prompt(base_prompt: str | None, personality_prompt: str | None) -> str:
+    """Compose the always-on base prompt with an optional personality overlay."""
+    base = str(base_prompt or "").strip()
+    overlay = str(personality_prompt or "").strip()
+    if base and overlay:
+        return f"{base}\n\n{overlay}"
+    return base or overlay
+
+
+def resolve_active_personality_prompt(cfg: Mapping[str, Any] | None) -> tuple[str, str]:
+    """Resolve ``agent.active_personality`` from a config mapping.
+
+    ``display.personality`` is intentionally not used as a runtime fallback:
+    display settings are UI state, while ``agent.active_personality`` is the
+    canonical prompt overlay switch.
+    """
+    cfg = cfg or {}
+    agent = cfg.get("agent", {}) if isinstance(cfg, Mapping) else {}
+    if not isinstance(agent, Mapping):
+        agent = {}
+    name = normalize_personality_name(agent.get("active_personality"))
+    custom = agent.get("personalities", {})
+    if not name:
+        return "", ""
+    try:
+        return name, resolve_personality_prompt(name, custom if isinstance(custom, Mapping) else {})
+    except KeyError:
+        return "", ""
+
+
+def compose_config_system_prompt(cfg: Mapping[str, Any] | None) -> str:
+    """Compose base ``agent.system_prompt`` with active personality overlay."""
+    cfg = cfg or {}
+    agent = cfg.get("agent", {}) if isinstance(cfg, Mapping) else {}
+    if not isinstance(agent, Mapping):
+        agent = {}
+    base = agent.get("system_prompt", "") or ""
+    _, overlay = resolve_active_personality_prompt(cfg)
+    return compose_system_prompt(base, overlay)
+
+
 def personality_preview(value: Any, max_chars: int = 50) -> str:
     """Return a compact human-readable preview for personality listings."""
     if isinstance(value, Mapping):

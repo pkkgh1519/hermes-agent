@@ -1436,10 +1436,11 @@ class GatewayRunner:
 
     @staticmethod
     def _load_ephemeral_system_prompt() -> str:
-        """Load ephemeral system prompt from config or env var.
+        """Load effective ephemeral system prompt from config or env var.
         
         Checks HERMES_EPHEMERAL_SYSTEM_PROMPT env var first, then falls back to
-        agent.system_prompt in ~/.hermes/config.yaml.
+        composing agent.system_prompt with the optional agent.active_personality
+        overlay in ~/.hermes/config.yaml.
         """
         prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
         if prompt:
@@ -1450,7 +1451,8 @@ class GatewayRunner:
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
-                return (cfg.get("agent", {}).get("system_prompt", "") or "").strip()
+                from hermes_cli.personalities import compose_config_system_prompt
+                return compose_config_system_prompt(cfg).strip()
         except Exception:
             pass
         return ""
@@ -5963,6 +5965,7 @@ class GatewayRunner:
         from hermes_cli.personalities import (
             CLEAR_PERSONALITY_NAMES,
             available_personalities,
+            compose_system_prompt,
             personality_preview,
             render_personality_prompt,
         )
@@ -5996,26 +5999,38 @@ class GatewayRunner:
             try:
                 if "agent" not in config or not isinstance(config.get("agent"), dict):
                     config["agent"] = {}
-                config["agent"]["system_prompt"] = ""
+                base_prompt = config["agent"].get("system_prompt", "") or ""
+                config["agent"]["active_personality"] = ""
+                display_config = config.get("display")
+                if not isinstance(display_config, dict):
+                    display_config = {}
+                    config["display"] = display_config
+                display_config["personality"] = ""
                 atomic_yaml_write(config_path, config)
             except Exception as e:
                 return f"⚠️ Failed to save personality change: {e}"
-            self._ephemeral_system_prompt = ""
-            return "🎭 Personality cleared — using base agent behavior.\n_(takes effect on next message)_"
+            self._ephemeral_system_prompt = base_prompt.strip()
+            return "🎭 Personality overlay cleared — base system prompt remains active.\n_(takes effect on next message)_"
         elif args in personalities:
-            new_prompt = render_personality_prompt(personalities[args])
+            overlay_prompt = render_personality_prompt(personalities[args])
 
-            # Write to config.yaml, same pattern as CLI save_config_value.
+            # Write active personality to config without overwriting base system_prompt.
             try:
                 if "agent" not in config or not isinstance(config.get("agent"), dict):
                     config["agent"] = {}
-                config["agent"]["system_prompt"] = new_prompt
+                base_prompt = config["agent"].get("system_prompt", "") or ""
+                config["agent"]["active_personality"] = args
+                display_config = config.get("display")
+                if not isinstance(display_config, dict):
+                    display_config = {}
+                    config["display"] = display_config
+                display_config["personality"] = args
                 atomic_yaml_write(config_path, config)
             except Exception as e:
                 return f"⚠️ Failed to save personality change: {e}"
 
             # Update in-memory so it takes effect on the very next message.
-            self._ephemeral_system_prompt = new_prompt
+            self._ephemeral_system_prompt = compose_system_prompt(base_prompt, overlay_prompt)
 
             return f"🎭 Personality set to **{args}**\n_(takes effect on next message)_"
 
