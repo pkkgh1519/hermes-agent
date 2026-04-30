@@ -92,9 +92,10 @@ class SessionSource:
     chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
     route_target: Optional[str] = None  # Exact route key (e.g. telegram:<chat_id>:<thread_id>)
     route_label: Optional[str] = None  # Human-friendly route label
-    route_mode: Optional[str] = None  # Route mode (e.g. notebooklm)
+    route_mode: Optional[str] = None  # Route mode (e.g. notebooklm, multica-coding)
     route_notebook: Optional[str] = None  # Bound notebook or project label
     route_notebook_id: Optional[str] = None  # Bound notebook ID when validated
+    route_multica: Optional[Dict[str, Any]] = None  # Multica route metadata for operator topics
     user_id_alt: Optional[str] = None  # Platform-specific stable alt ID (Signal UUID, Feishu union_id)
     chat_id_alt: Optional[str] = None  # Signal group internal ID
     is_bot: bool = False  # True when the message author is a bot/webhook (Discord)
@@ -135,6 +136,7 @@ class SessionSource:
             "route_mode": self.route_mode,
             "route_notebook": self.route_notebook,
             "route_notebook_id": self.route_notebook_id,
+            "route_multica": self.route_multica,
         }
         if self.user_id_alt:
             d["user_id_alt"] = self.user_id_alt
@@ -158,6 +160,7 @@ class SessionSource:
             route_mode=data.get("route_mode"),
             route_notebook=data.get("route_notebook"),
             route_notebook_id=data.get("route_notebook_id"),
+            route_multica=data.get("route_multica") if isinstance(data.get("route_multica"), dict) else None,
             user_id_alt=data.get("user_id_alt"),
             chat_id_alt=data.get("chat_id_alt"),
         )
@@ -293,6 +296,36 @@ def build_session_context_prompt(
             "It defaults to the bound notebook automatically. Only use `terminal` for NotebookLM setup, "
             "debugging, or CLI fallback."
         )
+
+    if (context.source.route_mode or "").strip().lower() == "multica-coding":
+        multica = context.source.route_multica or {}
+        lines.append(
+            "**Multica topic mode:** This Telegram topic is dedicated to Multica operations. "
+            "Use read-only status/report checks freely; do not create, rerun, or assign Multica issues without approval."
+        )
+        if multica.get("profile"):
+            lines.append(f"**Multica profile:** {multica['profile']}")
+        workspace = multica.get("workspace_slug") or multica.get("workspace")
+        if workspace:
+            lines.append(f"**Multica workspace:** {workspace}")
+        if multica.get("workspace_id"):
+            lines.append(f"**Multica workspace ID:** {multica['workspace_id']}")
+        if multica.get("default_agent"):
+            lines.append(f"**Default Multica agent:** {multica['default_agent']}")
+        if multica.get("helper"):
+            lines.append(f"**Multica helper:** `{multica['helper']}`")
+        allowed_scope = multica.get("allowed_scope") or "sandbox-only"
+        lines.append(f"**Multica allowed scope:** {allowed_scope}")
+        if multica.get("write_requires_chat_approval", True):
+            lines.append(
+                "**Multica write gate:** Creating or rerunning Multica issues requires explicit user approval "
+                "in this chat before executing write/delegation commands."
+            )
+        if multica.get("write_requires_env_gate", True):
+            lines.append(
+                "**Multica env gate:** For approved local writes, require `MULTICA_HERMES_WRITE_OK=1` "
+                "and pass `--allow-local-operator`."
+            )
 
     # User identity.
     # In shared multi-user sessions (shared threads OR shared non-thread groups

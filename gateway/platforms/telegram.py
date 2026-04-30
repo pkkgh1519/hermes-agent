@@ -3101,12 +3101,16 @@ class TelegramAdapter(BasePlatformAdapter):
         _route_mode = None
         _route_notebook = None
         _route_notebook_id = None
+        _route_multica = None
         if _exact_route is not None and thread_id_str is not None:
             _route_target = f"telegram:{chat.id}:{thread_id_str}"
             _route_label = _exact_route.get("label")
             _route_mode = _exact_route.get("mode")
             _route_notebook = _exact_route.get("notebook")
             _route_notebook_id = _exact_route.get("notebook_id")
+            _multica_value = _exact_route.get("multica")
+            if isinstance(_multica_value, dict):
+                _route_multica = _multica_value
 
         source = self.build_source(
             chat_id=str(chat.id),
@@ -3121,6 +3125,7 @@ class TelegramAdapter(BasePlatformAdapter):
             route_mode=_route_mode,
             route_notebook=_route_notebook,
             route_notebook_id=_route_notebook_id,
+            route_multica=_route_multica,
         )
         
         # Extract reply context if this message is a reply
@@ -3155,6 +3160,7 @@ class TelegramAdapter(BasePlatformAdapter):
             route_mode=source.route_mode,
             route_notebook=source.route_notebook,
             route_notebook_id=source.route_notebook_id,
+            route_multica=source.route_multica,
             timestamp=message.date,
         )
 

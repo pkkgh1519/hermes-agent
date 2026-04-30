@@ -730,6 +730,7 @@ class MessageEvent:
     route_mode: Optional[str] = None
     route_notebook: Optional[str] = None
     route_notebook_id: Optional[str] = None
+    route_multica: Optional[Dict[str, Any]] = None
     
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
@@ -2451,6 +2452,7 @@ class BasePlatformAdapter(ABC):
         route_mode: Optional[str] = None,
         route_notebook: Optional[str] = None,
         route_notebook_id: Optional[str] = None,
+        route_multica: Optional[Dict[str, Any]] = None,
         user_id_alt: Optional[str] = None,
         chat_id_alt: Optional[str] = None,
         is_bot: bool = False,
@@ -2473,6 +2475,7 @@ class BasePlatformAdapter(ABC):
             route_mode=route_mode,
             route_notebook=route_notebook,
             route_notebook_id=route_notebook_id,
+            route_multica=route_multica,
             user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt,
             is_bot=is_bot,
