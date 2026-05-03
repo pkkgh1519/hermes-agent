@@ -307,6 +307,7 @@ class TestBuiltinDiscovery:
             "tools.memory_tool",
             "tools.mixture_of_agents_tool",
             "tools.notebooklm_tool",
+            "tools.ppt_draft_tool",
             "tools.process_registry",
             "tools.rl_training_tool",
             "tools.send_message_tool",
