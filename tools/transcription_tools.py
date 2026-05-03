@@ -90,6 +90,15 @@ GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-lar
 _local_model: Optional[object] = None
 _local_model_name: Optional[str] = None
 
+
+def _is_cuda_runtime_library_error(error: Exception) -> bool:
+    """Return True when faster-whisper failed because CUDA runtime libraries are missing."""
+    message = str(error).lower()
+    return (
+        any(library in message for library in ("libcublas", "libcudnn", "libcuda", "libcufft", "libcurand"))
+        and ("not found" in message or "cannot be loaded" in message)
+    )
+
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
@@ -320,14 +329,7 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
     if not _HAS_FASTER_WHISPER:
         return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
 
-    try:
-        from faster_whisper import WhisperModel
-        # Lazy-load the model (downloads on first use, ~150 MB for 'base')
-        if _local_model is None or _local_model_name != model_name:
-            logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
-            _local_model = WhisperModel(model_name, device="auto", compute_type="auto")
-            _local_model_name = model_name
-
+    def _run_transcription() -> Dict[str, Any]:
         # Language: config.yaml (stt.local.language) > env var > auto-detect.
         _forced_lang = (
             _load_stt_config().get("local", {}).get("language")
@@ -347,6 +349,28 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
         )
 
         return {"success": True, "transcript": transcript, "provider": "local"}
+
+    try:
+        from faster_whisper import WhisperModel
+        # Lazy-load the model (downloads on first use, ~150 MB for 'base')
+        if _local_model is None or _local_model_name != model_name:
+            logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
+            _local_model = WhisperModel(model_name, device="auto", compute_type="auto")
+            _local_model_name = model_name
+
+        try:
+            return _run_transcription()
+        except Exception as e:
+            if not _is_cuda_runtime_library_error(e):
+                raise
+
+            logger.warning(
+                "Local faster-whisper CUDA runtime unavailable (%s); retrying on CPU int8",
+                e,
+            )
+            _local_model = WhisperModel(model_name, device="cpu", compute_type="int8")
+            _local_model_name = model_name
+            return _run_transcription()
 
     except Exception as e:
         logger.error("Local transcription failed: %s", e, exc_info=True)

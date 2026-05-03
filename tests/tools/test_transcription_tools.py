@@ -481,6 +481,46 @@ class TestTranscribeLocalExtended:
         assert result["success"] is False
         assert "CUDA out of memory" in result["error"]
 
+    def test_cuda_runtime_library_error_retries_on_cpu(self, tmp_path):
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        auto_model = MagicMock()
+        auto_model.transcribe.side_effect = RuntimeError(
+            "Library libcublas.so.12 is not found or cannot be loaded"
+        )
+
+        cpu_segment = MagicMock()
+        cpu_segment.text = "안녕하세요"
+        cpu_info = MagicMock()
+        cpu_info.language = "ko"
+        cpu_info.duration = 1.5
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([cpu_segment], cpu_info)
+
+        mock_whisper_cls = MagicMock(side_effect=[auto_model, cpu_model])
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result == {
+            "success": True,
+            "transcript": "안녕하세요",
+            "provider": "local",
+        }
+        assert mock_whisper_cls.call_args_list[0].kwargs == {
+            "device": "auto",
+            "compute_type": "auto",
+        }
+        assert mock_whisper_cls.call_args_list[1].kwargs == {
+            "device": "cpu",
+            "compute_type": "int8",
+        }
+
     def test_multiple_segments_joined(self, tmp_path):
         audio = tmp_path / "test.ogg"
         audio.write_bytes(b"fake")
