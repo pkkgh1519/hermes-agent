@@ -92,6 +92,48 @@ def check_telegram_requirements() -> bool:
     return TELEGRAM_AVAILABLE
 
 
+_SUPPORTED_IMAGE_DOCUMENT_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
+
+_IMAGE_DOCUMENT_MIME_TO_EXT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/webp": ".webp",
+}
+
+
+def _resolve_image_document_type(
+    filename: str | None,
+    mime_type: str | None,
+) -> tuple[str, str] | None:
+    """Return ``(extension, mime_type)`` for supported image documents.
+
+    Telegram users can send images either as compressed photos (``msg.photo``)
+    or as original files (``msg.document``).  Treat supported image documents as
+    image uploads internally so vision routing and PPT photo intake share the
+    existing image-cache path.
+    """
+    ext = ""
+    if filename:
+        _, ext = os.path.splitext(filename)
+        ext = ext.lower()
+
+    normalized_mime = (mime_type or "").split(";", 1)[0].strip().lower()
+    if ext in _SUPPORTED_IMAGE_DOCUMENT_TYPES:
+        return ext, _SUPPORTED_IMAGE_DOCUMENT_TYPES[ext]
+
+    if normalized_mime in _IMAGE_DOCUMENT_MIME_TO_EXT:
+        ext = _IMAGE_DOCUMENT_MIME_TO_EXT[normalized_mime]
+        return ext, _SUPPORTED_IMAGE_DOCUMENT_TYPES[ext]
+
+    return None
+
+
 # Matches every character that MarkdownV2 requires to be backslash-escaped
 # when it appears outside a code span or fenced code block.
 _MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
@@ -3123,6 +3165,34 @@ class TelegramAdapter(BasePlatformAdapter):
                 if not ext and doc.mime_type:
                     video_mime_to_ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}
                     ext = video_mime_to_ext.get(doc.mime_type, "")
+
+                image_document_type = _resolve_image_document_type(original_filename, doc.mime_type)
+                if image_document_type:
+                    image_ext, image_mime_type = image_document_type
+                    MAX_DOC_BYTES = 20 * 1024 * 1024
+                    if not doc.file_size or doc.file_size > MAX_DOC_BYTES:
+                        event.text = (
+                            "The image document is too large or its size could not be verified. "
+                            "Maximum: 20 MB."
+                        )
+                        logger.info("[Telegram] Image document too large: %s bytes", doc.file_size)
+                        await self.handle_message(event)
+                        return
+
+                    file_obj = await doc.get_file()
+                    image_bytes = await file_obj.download_as_bytearray()
+                    cached_path = cache_image_from_bytes(bytes(image_bytes), ext=image_ext)
+                    event.media_urls = [cached_path]
+                    event.media_types = [image_mime_type]
+                    event.message_type = MessageType.PHOTO
+                    logger.info("[Telegram] Cached user image document at %s", cached_path)
+
+                    media_group_id = getattr(msg, "media_group_id", None)
+                    if media_group_id:
+                        await self._queue_media_group_event(str(media_group_id), event)
+                    else:
+                        await self.handle_message(event)
+                    return
 
                 if ext in SUPPORTED_VIDEO_TYPES:
                     file_obj = await doc.get_file()
