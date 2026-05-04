@@ -9,6 +9,7 @@ from typing import Iterable
 
 
 _MAX_PHOTO_BATCHES = 20
+_PENDING_PHOTO_TTL_SECONDS = 15 * 60
 _STATE_LOCK = threading.RLock()
 _SESSION_STATE: dict[str, "SessionDraftIntake"] = {}
 
@@ -57,6 +58,10 @@ def _normalize_paths(image_paths: Iterable[str]) -> list[str]:
         if value:
             normalized.append(value)
     return normalized
+
+
+def _is_recent_pending_photo_batch(batch: PendingDraftPhotoBatch, now: float) -> bool:
+    return now - float(batch.uploaded_at) <= _PENDING_PHOTO_TTL_SECONDS
 
 
 def get_session_draft_intake(session_key: str | None) -> SessionDraftIntake | None:
@@ -155,7 +160,11 @@ def assign_pending_photo_batches_to_tag(
 
     with _STATE_LOCK:
         intake = _SESSION_STATE.setdefault(key, SessionDraftIntake())
-        pending = list(intake.pending_photo_batches)
+        now = float(tagged_at) if tagged_at is not None else time.time()
+        pending = [
+            batch for batch in intake.pending_photo_batches
+            if _is_recent_pending_photo_batch(batch, now)
+        ]
         intake.pending_photo_batches = []
         assigned: list[DraftPhotoBatch] = []
         for batch in pending:
@@ -163,7 +172,7 @@ def assign_pending_photo_batches_to_tag(
                 tag=normalized_tag,
                 image_paths=list(batch.image_paths),
                 message_id=str(message_id) if message_id is not None else batch.message_id,
-                uploaded_at=float(tagged_at) if tagged_at is not None else batch.uploaded_at,
+                uploaded_at=now if tagged_at is not None else batch.uploaded_at,
             )
             intake.photo_batches.append(tagged_batch)
             assigned.append(tagged_batch)

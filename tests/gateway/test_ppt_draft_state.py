@@ -160,6 +160,42 @@ def test_assign_pending_photo_batches_to_tag_consumes_recent_untagged_batches():
 
 
 
+def test_assign_pending_photo_batches_to_tag_drops_stale_untagged_batches():
+    session_key = "agent:main:telegram:group:-1003586456169:3"
+    tagged_at = 1710002000.0
+
+    add_pending_photo_batch(
+        session_key,
+        image_paths=["/home/hwan/.hermes/cache/images/stale-profile-edit.png"],
+        message_id="old-profile-image",
+        uploaded_at=tagged_at - 901.0,
+    )
+    add_pending_photo_batch(
+        session_key,
+        image_paths=["/home/hwan/.hermes/cache/images/recent-offer-photo.jpg"],
+        message_id="recent-offer-image",
+        uploaded_at=tagged_at - 899.0,
+    )
+
+    assigned = assign_pending_photo_batches_to_tag(
+        session_key,
+        tag="offer_01",
+        message_id="tag-1",
+        tagged_at=tagged_at,
+    )
+
+    assert [batch.image_paths for batch in assigned] == [
+        ["/home/hwan/.hermes/cache/images/recent-offer-photo.jpg"],
+    ]
+
+    intake = get_session_draft_intake(session_key)
+    assert intake is not None
+    assert [batch.image_paths for batch in intake.photo_batches] == [
+        ["/home/hwan/.hermes/cache/images/recent-offer-photo.jpg"],
+    ]
+    assert intake.pending_photo_batches == []
+
+
 def test_photo_batches_are_bounded_to_latest_twenty():
     session_key = "agent:main:telegram:group:-1003586456169:3"
 
