@@ -60,6 +60,7 @@ _SESSION_ROUTE_LABEL: ContextVar = ContextVar("HERMES_SESSION_ROUTE_LABEL", defa
 _SESSION_ROUTE_MODE: ContextVar = ContextVar("HERMES_SESSION_ROUTE_MODE", default=_UNSET)
 _SESSION_ROUTE_NOTEBOOK: ContextVar = ContextVar("HERMES_SESSION_ROUTE_NOTEBOOK", default=_UNSET)
 _SESSION_ROUTE_NOTEBOOK_ID: ContextVar = ContextVar("HERMES_SESSION_ROUTE_NOTEBOOK_ID", default=_UNSET)
+_SESSION_ID: ContextVar = ContextVar("HERMES_SESSION_ID", default=_UNSET)
 
 # Cron auto-delivery vars — set per-job in run_job() so concurrent jobs
 # don't clobber each other's delivery targets.
@@ -80,6 +81,7 @@ _VAR_MAP = {
     "HERMES_SESSION_ROUTE_MODE": _SESSION_ROUTE_MODE,
     "HERMES_SESSION_ROUTE_NOTEBOOK": _SESSION_ROUTE_NOTEBOOK,
     "HERMES_SESSION_ROUTE_NOTEBOOK_ID": _SESSION_ROUTE_NOTEBOOK_ID,
+    "HERMES_SESSION_ID": _SESSION_ID,
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
     "HERMES_CRON_AUTO_DELIVER_THREAD_ID": _CRON_AUTO_DELIVER_THREAD_ID,
@@ -94,6 +96,7 @@ def set_session_vars(
     user_id: str = "",
     user_name: str = "",
     session_key: str = "",
+    session_id: str = "",
     route_target: str = "",
     route_label: str = "",
     route_mode: str = "",
@@ -116,6 +119,7 @@ def set_session_vars(
         _SESSION_USER_ID.set(user_id),
         _SESSION_USER_NAME.set(user_name),
         _SESSION_KEY.set(session_key),
+        _SESSION_ID.set(session_id),
         _SESSION_ROUTE_TARGET.set(route_target),
         _SESSION_ROUTE_LABEL.set(route_label),
         _SESSION_ROUTE_MODE.set(route_mode),
@@ -144,6 +148,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_USER_ID,
         _SESSION_USER_NAME,
         _SESSION_KEY,
+        _SESSION_ID,
         _SESSION_ROUTE_TARGET,
         _SESSION_ROUTE_LABEL,
         _SESSION_ROUTE_MODE,

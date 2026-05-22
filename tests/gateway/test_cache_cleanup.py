@@ -18,9 +18,9 @@ def test_cleanup_document_cache_recurses_and_defaults_to_48_hours(tmp_path, monk
     monkeypatch.setattr(base, "DOCUMENT_CACHE_DIR", tmp_path)
 
     stale_root = tmp_path / "old.pdf"
-    stale_nested = tmp_path / "ppt_drafts" / "old.pptx"
+    stale_nested = tmp_path / "nested_docs" / "old.pptx"
     recent_root = tmp_path / "recent.pdf"
-    recent_nested = tmp_path / "ppt_drafts" / "recent.pptx"
+    recent_nested = tmp_path / "nested_docs" / "recent.pptx"
 
     _write_file_with_age(stale_root, age_hours=49)
     _write_file_with_age(stale_nested, age_hours=49)
