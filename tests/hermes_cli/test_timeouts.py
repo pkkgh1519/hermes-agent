@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import textwrap
+from types import SimpleNamespace
 
 from hermes_cli.timeouts import (
     get_provider_request_timeout,
@@ -306,3 +307,79 @@ def test_explicit_non_stream_stale_timeout_is_honored_for_local_endpoints(monkey
     )
 
     assert agent._compute_non_stream_stale_timeout([]) == 300.0
+
+
+def test_codex_responses_input_payload_extends_non_stream_stale_timeout(monkeypatch, tmp_path):
+    """Responses API payloads store prompt text under input, not messages."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+
+    from run_agent import AIAgent
+    agent = AIAgent(
+        model="gpt-5.5",
+        provider="openai-codex",
+        api_key="sk-dummy",
+        base_url="https://chatgpt.com/backend-api/codex",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        platform="cli",
+    )
+
+    payload = {
+        "model": "gpt-5.5",
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "x" * 220_000},
+                ],
+            }
+        ],
+    }
+
+    assert agent._compute_non_stream_stale_timeout(payload) == 450.0
+
+
+def test_interruptible_api_call_uses_full_payload_for_stale_timeout(monkeypatch, tmp_path):
+    """The stale detector must inspect the post-preflight API payload."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+
+    from run_agent import AIAgent
+    agent = AIAgent(
+        model="gpt-5.5",
+        provider="openai-codex",
+        api_key="sk-dummy",
+        base_url="https://chatgpt.com/backend-api/codex",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        platform="cli",
+    )
+    agent.api_mode = "codex_responses"
+
+    payload = {"model": "gpt-5.5", "input": [{"role": "user", "content": "hello"}]}
+    captured = {}
+
+    def fake_compute(value):
+        captured["payload"] = value
+        return 300.0
+
+    monkeypatch.setattr(agent, "_compute_non_stream_stale_timeout", fake_compute)
+    monkeypatch.setattr(
+        agent,
+        "_create_request_openai_client",
+        lambda **kwargs: SimpleNamespace(close=lambda: None),
+    )
+    monkeypatch.setattr(agent, "_close_request_openai_client", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        agent,
+        "_run_codex_stream",
+        lambda api_kwargs, client=None, on_first_delta=None: SimpleNamespace(output=[]),
+    )
+
+    agent._interruptible_api_call(payload)
+
+    assert captured["payload"] is payload

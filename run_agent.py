@@ -3508,14 +3508,38 @@ class AIAgent:
 
         return 300.0, True
 
-    def _compute_non_stream_stale_timeout(self, messages: list[dict[str, Any]]) -> float:
+    def _estimate_non_stream_payload_tokens(self, payload: Any) -> int:
+        """Estimate prompt tokens for non-stream stale-timeout scaling.
+
+        Chat-completions payloads keep prompt text in ``messages`` while
+        Responses/Codex payloads keep it in ``input`` plus optional
+        ``instructions``.  The stale detector only needs a rough size bucket, so
+        reuse the existing char/4 heuristic while looking at the prompt-bearing
+        fields for both shapes.
+        """
+        if not payload:
+            return 0
+        if isinstance(payload, dict):
+            prompt_chars = 0
+            for key in ("messages", "input", "instructions"):
+                value = payload.get(key)
+                if value is not None:
+                    prompt_chars += len(str(value))
+            if prompt_chars:
+                return prompt_chars // 4
+            return len(str(payload)) // 4
+        if isinstance(payload, list):
+            return sum(len(str(v)) for v in payload) // 4
+        return len(str(payload)) // 4
+
+    def _compute_non_stream_stale_timeout(self, payload: Any) -> float:
         """Compute the effective non-stream stale timeout for this request."""
         stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
         base_url = getattr(self, "_base_url", None) or self.base_url or ""
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
             return float("inf")
 
-        est_tokens = sum(len(str(v)) for v in messages) // 4
+        est_tokens = self._estimate_non_stream_payload_tokens(payload)
         if est_tokens > 100_000:
             return max(stale_base, 600.0)
         if est_tokens > 50_000:
@@ -7812,9 +7836,7 @@ class AIAgent:
         # httpx timeout (default 1800s) with zero feedback.  The stale
         # detector kills the connection early so the main retry loop can
         # apply richer recovery (credential rotation, provider fallback).
-        _stale_timeout = self._compute_non_stream_stale_timeout(
-            api_kwargs.get("messages", [])
-        )
+        _stale_timeout = self._compute_non_stream_stale_timeout(api_kwargs)
 
         _call_start = time.time()
         self._touch_activity("waiting for non-streaming API response")
@@ -7838,7 +7860,7 @@ class AIAgent:
             # arrives within the configured timeout.
             _elapsed = time.time() - _call_start
             if _elapsed > _stale_timeout:
-                _est_ctx = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+                _est_ctx = self._estimate_non_stream_payload_tokens(api_kwargs)
                 logger.warning(
                     "Non-streaming API call stale for %.0fs (threshold %.0fs). "
                     "model=%s context=~%s tokens. Killing connection.",
