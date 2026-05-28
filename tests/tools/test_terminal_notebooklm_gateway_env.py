@@ -68,6 +68,49 @@ def test_terminal_tool_exports_bound_notebook_env_vars_to_shell(monkeypatch):
 
 
 
+def test_terminal_tool_exports_selected_hub_notebook_env_vars(monkeypatch, tmp_path):
+    from gateway.notebooklm_hub_state import set_selected_notebook
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    set_selected_notebook("sess-hub", notebook="Hub Notebook", notebook_id="nb-hub")
+
+    tokens = set_session_vars(
+        platform="telegram",
+        chat_id="-1003586456169",
+        chat_name="AGI Jarvis",
+        thread_id="3",
+        user_id="111",
+        user_name="Kim",
+        session_key="sess-hub",
+        route_target="telegram:-1003586456169:3",
+        route_label="NLM Hub",
+        route_mode="notebooklm-hub",
+        route_notebook="",
+        route_notebook_id="",
+    )
+    task_id = f"nb-hub-env-{uuid.uuid4().hex[:8]}"
+    try:
+        result_json = terminal_tool.terminal_tool(
+            command="python - <<'PY'\nimport os, json\nprint(json.dumps({\"route\": os.getenv(\"HERMES_SESSION_ROUTE_TARGET\"), \"notebook\": os.getenv(\"HERMES_NOTEBOOKLM_NOTEBOOK\"), \"notebook_id\": os.getenv(\"HERMES_NOTEBOOKLM_NOTEBOOK_ID\")}))\nPY",
+            task_id=task_id,
+            timeout=120,
+        )
+        result = json.loads(result_json)
+        payload = json.loads(result["output"].strip())
+
+        assert result["exit_code"] == 0
+        assert payload == {
+            "route": "telegram:-1003586456169:3",
+            "notebook": "Hub Notebook",
+            "notebook_id": "nb-hub",
+        }
+    finally:
+        clear_session_vars(tokens)
+        terminal_tool.cleanup_vm(task_id)
+
+
+
 def test_terminal_tool_clears_route_env_vars_on_reused_task(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "local")
 

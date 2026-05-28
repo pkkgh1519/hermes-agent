@@ -1668,8 +1668,26 @@ def _gateway_session_env_exports() -> dict[str, str]:
         "HERMES_SESSION_ROUTE_NOTEBOOK": _gse("HERMES_SESSION_ROUTE_NOTEBOOK", ""),
         "HERMES_SESSION_ROUTE_NOTEBOOK_ID": _gse("HERMES_SESSION_ROUTE_NOTEBOOK_ID", ""),
     }
-    exported["HERMES_NOTEBOOKLM_NOTEBOOK"] = exported["HERMES_SESSION_ROUTE_NOTEBOOK"]
-    exported["HERMES_NOTEBOOKLM_NOTEBOOK_ID"] = exported["HERMES_SESSION_ROUTE_NOTEBOOK_ID"]
+
+    notebook_name = exported["HERMES_SESSION_ROUTE_NOTEBOOK"]
+    notebook_id = exported["HERMES_SESSION_ROUTE_NOTEBOOK_ID"]
+    route_mode = exported["HERMES_SESSION_ROUTE_MODE"].strip().lower()
+    session_key = exported["HERMES_SESSION_KEY"]
+
+    if route_mode == "notebooklm-hub" and session_key and not notebook_name and not notebook_id:
+        try:
+            from gateway.notebooklm_hub_state import get_selected_notebook
+
+            selected = get_selected_notebook(session_key) or {}
+            notebook_name = str(selected.get("notebook") or "")
+            notebook_id = str(selected.get("notebook_id") or "")
+        except Exception:
+            pass
+
+    if notebook_name:
+        exported["HERMES_NOTEBOOKLM_NOTEBOOK"] = notebook_name
+    if notebook_id:
+        exported["HERMES_NOTEBOOKLM_NOTEBOOK_ID"] = notebook_id
     return {key: value for key, value in exported.items() if value}
 
 

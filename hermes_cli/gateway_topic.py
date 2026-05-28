@@ -131,9 +131,17 @@ def _bind(args) -> None:
     notebook_title = getattr(args, "notebook", "") or ""
     notebook_id = ""
     profile = getattr(args, "profile", None) or os.getenv("NOTEBOOKLM_PROFILE", "default")
-    mode = "manual"
-    if notebook_title:
-        mode = "notebooklm"
+    requested_mode = str(getattr(args, "mode", "") or "").strip().lower()
+
+    if requested_mode == "notebooklm-hub" and notebook_title:
+        raise SystemExit("--mode notebooklm-hub cannot be combined with --notebook")
+    if requested_mode == "notebooklm" and not notebook_title:
+        raise SystemExit("--mode notebooklm requires --notebook")
+    if requested_mode == "manual" and notebook_title:
+        raise SystemExit("--mode manual cannot be combined with --notebook")
+
+    mode = requested_mode or ("notebooklm" if notebook_title else "manual")
+    if mode == "notebooklm":
         try:
             notebook_info = resolve_notebook_reference(notebook_title, profile=profile)
             notebook_id = str(notebook_info.get("id") or "")

@@ -65,6 +65,7 @@ def test_gateway_topic_bind_parses_exact_target_and_notebook_fields(monkeypatch)
         captured["target"] = args.target
         captured["label"] = args.label
         captured["notebook"] = args.notebook
+        captured["mode"] = args.mode
         captured["profile"] = args.profile
         captured["free_response"] = args.free_response
 
@@ -97,7 +98,48 @@ def test_gateway_topic_bind_parses_exact_target_and_notebook_fields(monkeypatch)
         "target": "telegram:-1003586456169:478",
         "label": "NLM Lab",
         "notebook": "NLM Lab / 제국 운영",
+        "mode": "",
         "profile": "nlm-lab",
+        "free_response": True,
+    }
+
+
+
+def test_gateway_topic_bind_parses_hub_mode(monkeypatch):
+    import hermes_cli.main as main_mod
+
+    captured = {}
+
+    def fake_cmd_gateway(args):
+        captured["topic_action"] = args.topic_action
+        captured["target"] = args.target
+        captured["mode"] = args.mode
+        captured["notebook"] = args.notebook
+        captured["free_response"] = args.free_response
+
+    monkeypatch.setattr(main_mod, "cmd_gateway", fake_cmd_gateway)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hermes",
+            "gateway",
+            "topic",
+            "bind",
+            "telegram:-1003586456169:3",
+            "--mode",
+            "notebooklm-hub",
+            "--free-response",
+        ],
+    )
+
+    main_mod.main()
+
+    assert captured == {
+        "topic_action": "bind",
+        "target": "telegram:-1003586456169:3",
+        "mode": "notebooklm-hub",
+        "notebook": "",
         "free_response": True,
     }
 

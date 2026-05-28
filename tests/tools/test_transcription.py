@@ -13,6 +13,9 @@ from unittest.mock import MagicMock, patch, mock_open
 
 import pytest
 
+from agent import transcription_registry
+from agent.transcription_provider import TranscriptionProvider
+
 
 def _fake_faster_whisper_module(mock_model):
     return SimpleNamespace(WhisperModel=MagicMock(return_value=mock_model))
@@ -26,6 +29,43 @@ def _fake_faster_whisper_module(mock_model):
 @pytest.fixture(autouse=True)
 def _clear_openai_env(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_transcription_registry():
+    transcription_registry._reset_for_tests()
+    yield
+    transcription_registry._reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _stabilize_local_stt_state(monkeypatch):
+    """Keep local STT tests deterministic regardless of host-installed deps."""
+    monkeypatch.setattr("tools.transcription_tools._try_lazy_install_stt", lambda: False)
+    monkeypatch.setattr("tools.transcription_tools._local_model", None)
+    monkeypatch.setattr("tools.transcription_tools._local_model_name", None)
+
+
+class _FakePluginProvider(TranscriptionProvider):
+    def __init__(self, name: str = "plugin-stt", *, available: bool = True):
+        self._name = name
+        self._available = available
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def is_available(self) -> bool:
+        return self._available
+
+    def transcribe(self, file_path: str, *, model=None, language=None, **kwargs):
+        return {
+            "success": True,
+            "transcript": f"plugin:{Path(file_path).name}",
+            "provider": self._name,
+            "model": model,
+            "language": language,
+        }
 
 
 class TestGetProvider:
@@ -197,6 +237,23 @@ class TestTranscribeOpenAI:
 
 
 class TestTranscribeAudio:
+
+    def test_dispatches_to_plugin_provider(self, tmp_path, monkeypatch):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        transcription_registry.register_provider(_FakePluginProvider("plugin-stt"))
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "plugin-stt"}), \
+             patch("tools.transcription_tools._get_provider", return_value="plugin-stt"), \
+             patch("hermes_cli.plugins._ensure_plugins_discovered", lambda force=False: None):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file), model="demo-model")
+
+        assert result["success"] is True
+        assert result["provider"] == "plugin-stt"
+        assert result["transcript"] == "plugin:test.ogg"
+        assert result["model"] == "demo-model"
 
     def test_dispatches_to_local(self, tmp_path):
         audio_file = tmp_path / "test.ogg"

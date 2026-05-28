@@ -283,7 +283,7 @@ class HonchoMemoryProvider(MemoryProvider):
             # ----- Port #4053: cron guard -----
             agent_context = kwargs.get("agent_context", "")
             platform = kwargs.get("platform", "cli")
-            if agent_context in ("cron", "flush") or platform == "cron":
+            if agent_context in {"cron", "flush"} or platform == "cron":
                 logger.debug("Honcho skipped: cron/flush context (agent_context=%s, platform=%s)",
                              agent_context, platform)
                 self._cron_skipped = True
@@ -404,7 +404,7 @@ class HonchoMemoryProvider(MemoryProvider):
         # pop_context_result() in prefetch(). Dialectic prewarm runs the
         # full configured depth and writes into _prefetch_result so turn 1
         # consumes the result directly.
-        if self._recall_mode in ("context", "hybrid"):
+        if self._recall_mode in {"context", "hybrid"}:
             try:
                 self._manager.prefetch_context(self._session_key)
             except Exception as e:
@@ -1127,7 +1127,7 @@ class HonchoMemoryProvider(MemoryProvider):
             return
         if not self._manager or not self._session_key:
             return
-        if self._config and not self._config.save_messages:
+        if self._config and not getattr(self._config, "save_messages", True):
             return
 
         msg_limit = self._config.message_max_chars if self._config else 25000

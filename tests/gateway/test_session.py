@@ -61,34 +61,30 @@ class TestSessionSourceRoundtrip:
         assert restored.chat_topic == "Planning and coordination for Project X"
         assert restored.chat_name == "Server / #project-planning"
 
-    def test_full_roundtrip_with_multica_route_metadata(self):
-        multica = {
-            "profile": "m1",
-            "workspace_slug": "hermes-m1-sandbox",
-            "helper": "/home/hwan/.hermes/multica-m1/scripts/multica_m1_helper.py",
-            "write_requires_chat_approval": True,
-            "write_requires_env_gate": True,
-            "allowed_scope": "sandbox-only",
-        }
+    def test_full_roundtrip_with_exact_route_metadata(self):
         source = SessionSource(
             platform=Platform.TELEGRAM,
             chat_id="-1003586456169",
             chat_name="AGI Jarvis",
             chat_type="group",
-            thread_id="141",
-            route_target="telegram:-1003586456169:141",
-            route_label="Multica Ops",
-            route_mode="multica-coding",
-            route_multica=multica,
+            thread_id="478",
+            route_target="telegram:-1003586456169:478",
+            route_label="NLM Lab",
+            route_mode="notebooklm",
+            route_notebook="NLM Lab / 제국 운영",
+            route_notebook_id="nb-478",
         )
         d = source.to_dict()
-        assert d["route_multica"] == multica
+        assert d["route_target"] == "telegram:-1003586456169:478"
+        assert d["route_notebook"] == "NLM Lab / 제국 운영"
+        assert d["route_notebook_id"] == "nb-478"
 
         restored = SessionSource.from_dict(d)
-        assert restored.route_target == "telegram:-1003586456169:141"
-        assert restored.route_label == "Multica Ops"
-        assert restored.route_mode == "multica-coding"
-        assert restored.route_multica == multica
+        assert restored.route_target == "telegram:-1003586456169:478"
+        assert restored.route_label == "NLM Lab"
+        assert restored.route_mode == "notebooklm"
+        assert restored.route_notebook == "NLM Lab / 제국 운영"
+        assert restored.route_notebook_id == "nb-478"
 
     def test_minimal_roundtrip(self):
         source = SessionSource(platform=Platform.LOCAL, chat_id="cli")
@@ -539,49 +535,7 @@ class TestBuildSessionContextPrompt:
         assert "**Topic Route:** telegram:" in prompt
         assert ":478" in prompt
 
-    def test_prompt_includes_multica_topic_operator_guidance(self):
-        config = GatewayConfig(
-            platforms={
-                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
-            },
-        )
-        source = SessionSource(
-            platform=Platform.TELEGRAM,
-            chat_id="-1003586456169",
-            chat_name="AGI Jarvis",
-            chat_type="group",
-            thread_id="141",
-            route_target="telegram:-1003586456169:141",
-            route_label="Multica Ops",
-            route_mode="multica-coding",
-            route_multica={
-                "profile": "m1",
-                "workspace_slug": "hermes-m1-sandbox",
-                "workspace_id": "e938ecda-ec8b-4d73-8bf5-b07e30653ead",
-                "default_agent": "m1-sandbox-codex",
-                "helper": "/home/hwan/.hermes/multica-m1/scripts/multica_m1_helper.py",
-                "write_requires_chat_approval": True,
-                "write_requires_env_gate": True,
-                "allowed_scope": "sandbox-only",
-            },
-        )
-        ctx = build_session_context(source, config)
-        prompt = build_session_context_prompt(ctx)
-
-        assert "**Topic Route:** telegram:-1003586456169:141" in prompt
-        assert "**Route Label:** Multica Ops" in prompt
-        assert "**Route Mode:** multica-coding" in prompt
-        assert "**Multica topic mode:** This Telegram topic is dedicated to Multica operations." in prompt
-        assert "**Multica profile:** m1" in prompt
-        assert "**Multica workspace:** hermes-m1-sandbox" in prompt
-        assert "**Default Multica agent:** m1-sandbox-codex" in prompt
-        assert "**Multica helper:** `/home/hwan/.hermes/multica-m1/scripts/multica_m1_helper.py`" in prompt
-        assert "Creating or rerunning Multica issues requires explicit user approval" in prompt
-        assert "MULTICA_HERMES_WRITE_OK=1" in prompt
-        assert "--allow-local-operator" in prompt
-        assert "sandbox-only" in prompt
-
-    def test_prompt_omits_multica_guidance_for_non_multica_route(self):
+    def test_prompt_includes_notebooklm_hub_guidance(self):
         config = GatewayConfig(
             platforms={
                 Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
@@ -600,8 +554,8 @@ class TestBuildSessionContextPrompt:
         ctx = build_session_context(source, config)
         prompt = build_session_context_prompt(ctx)
 
-        assert "Multica topic mode" not in prompt
-        assert "MULTICA_HERMES_WRITE_OK" not in prompt
+        assert "**NotebookLM hub preference:**" in prompt
+        assert "list or select notebooks by name/number" in prompt
 
 
 class TestSessionStoreRouteRefresh:

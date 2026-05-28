@@ -831,6 +831,17 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
 
+# Image extensions that some platforms deliver as "documents" rather than
+# native photo attachments. Route these through the image cache/vision path
+# instead of treating them as unsupported generic documents.
+SUPPORTED_IMAGE_DOCUMENT_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
 
 def get_document_cache_dir() -> Path:
     """Return the document cache directory, creating it if it doesn't exist."""
@@ -963,7 +974,6 @@ class MessageEvent:
     route_mode: Optional[str] = None
     route_notebook: Optional[str] = None
     route_notebook_id: Optional[str] = None
-    route_multica: Optional[Dict[str, Any]] = None
 
     # Channel context recovered by history backfill (e.g. messages between
     # bot turns that were missed due to require_mention).  Kept separate
@@ -3577,7 +3587,6 @@ class BasePlatformAdapter(ABC):
         route_mode: Optional[str] = None,
         route_notebook: Optional[str] = None,
         route_notebook_id: Optional[str] = None,
-        route_multica: Optional[Dict[str, Any]] = None,
         user_id_alt: Optional[str] = None,
         chat_id_alt: Optional[str] = None,
         is_bot: bool = False,
@@ -3603,7 +3612,6 @@ class BasePlatformAdapter(ABC):
             route_mode=route_mode,
             route_notebook=route_notebook,
             route_notebook_id=route_notebook_id,
-            route_multica=route_multica,
             user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt,
             is_bot=is_bot,

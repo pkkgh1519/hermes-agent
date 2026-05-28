@@ -10001,6 +10001,15 @@ def main():
     gateway_topic_bind.add_argument("--label", default="", help="Human-friendly route label")
     gateway_topic_bind.add_argument("--notebook", default="", help="NotebookLM notebook label/name")
     gateway_topic_bind.add_argument(
+        "--mode",
+        choices=["manual", "notebooklm", "notebooklm-hub"],
+        default="",
+        help=(
+            "Optional route mode override: manual, notebooklm (bound notebook via --notebook), "
+            "or notebooklm-hub (shared hub without a fixed bound notebook)."
+        ),
+    )
+    gateway_topic_bind.add_argument(
         "--profile",
         default=os.getenv("NOTEBOOKLM_PROFILE", "default"),
         help="NotebookLM profile name for notebook lookup (default: NOTEBOOKLM_PROFILE or default)",

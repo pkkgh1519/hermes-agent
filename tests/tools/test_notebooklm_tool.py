@@ -21,6 +21,24 @@ def _set_bound_notebook_context():
 
 
 
+def _set_hub_context():
+    return set_session_vars(
+        platform="telegram",
+        chat_id="-1003586456169",
+        chat_name="AGI Jarvis",
+        thread_id="3",
+        user_id="111",
+        user_name="Kim",
+        session_key="sess-hub",
+        route_target="telegram:-1003586456169:3",
+        route_label="NLM Hub",
+        route_mode="notebooklm-hub",
+        route_notebook="",
+        route_notebook_id="",
+    )
+
+
+
 def test_status_includes_bound_route_notebook(monkeypatch):
     import tools.notebooklm_tool as notebooklm_tool_mod
 
@@ -61,6 +79,88 @@ def test_resolve_defaults_to_route_bound_notebook():
         "notebook_id": "nb-478",
         "source": "session-route",
     }
+
+
+
+def test_status_includes_selected_hub_notebook(monkeypatch, tmp_path):
+    import tools.notebooklm_tool as notebooklm_tool_mod
+    from gateway.notebooklm_hub_state import set_selected_notebook
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    set_selected_notebook("sess-hub", notebook="Hub Notebook", notebook_id="nb-hub")
+    monkeypatch.setattr(
+        notebooklm_tool_mod,
+        "collect_status",
+        lambda profile="default": {"status": "ready", "logged_in": True, "profile": profile},
+    )
+
+    tokens = _set_hub_context()
+    try:
+        payload = json.loads(notebooklm_tool_mod.notebooklm_tool(action="status"))
+    finally:
+        clear_session_vars(tokens)
+
+    assert payload["selected_notebook"] == {
+        "notebook": "Hub Notebook",
+        "notebook_id": "nb-hub",
+    }
+
+
+
+def test_resolve_defaults_to_hub_selected_notebook(monkeypatch, tmp_path):
+    import tools.notebooklm_tool as notebooklm_tool_mod
+    from gateway.notebooklm_hub_state import set_selected_notebook
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    set_selected_notebook("sess-hub", notebook="Hub Notebook", notebook_id="nb-hub")
+
+    tokens = _set_hub_context()
+    try:
+        payload = json.loads(notebooklm_tool_mod.notebooklm_tool(action="resolve"))
+    finally:
+        clear_session_vars(tokens)
+
+    assert payload == {
+        "notebook": "Hub Notebook",
+        "notebook_id": "nb-hub",
+        "source": "session-hub",
+    }
+
+
+
+def test_ask_uses_selected_hub_notebook_by_default(monkeypatch, tmp_path):
+    import tools.notebooklm_tool as notebooklm_tool_mod
+    from gateway.notebooklm_hub_state import set_selected_notebook
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    set_selected_notebook("sess-hub", notebook="Hub Notebook", notebook_id="nb-hub")
+
+    recorded = {}
+
+    def fake_ask_notebook(question, *, notebook_id=None, profile="default"):
+        recorded["question"] = question
+        recorded["notebook_id"] = notebook_id
+        recorded["profile"] = profile
+        return {"answer": "hub ok"}
+
+    monkeypatch.setattr(notebooklm_tool_mod, "ask_notebook", fake_ask_notebook)
+
+    tokens = _set_hub_context()
+    try:
+        payload = json.loads(
+            notebooklm_tool_mod.notebooklm_tool(action="ask", question="허브 노트북 요약해줘")
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert recorded == {
+        "question": "허브 노트북 요약해줘",
+        "notebook_id": "nb-hub",
+        "profile": "default",
+    }
+    assert payload["notebook"] == "Hub Notebook"
+    assert payload["notebook_id"] == "nb-hub"
+    assert payload["answer"] == "hub ok"
 
 
 
@@ -142,7 +242,7 @@ def test_ask_without_bound_notebook_or_id_returns_structured_error():
 
     assert (
         payload["error"]
-        == "No notebook_id is available. Provide notebook_id explicitly or bind/resolve the notebook first."
+        == "No notebook_id is available. Provide notebook_id explicitly or select/resolve a notebook first."
     )
 
 

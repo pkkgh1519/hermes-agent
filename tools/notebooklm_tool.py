@@ -45,13 +45,34 @@ def _get_bound_notebook() -> dict[str, str]:
             "notebook_id": "",
             "route_target": "",
             "route_mode": "",
+            "session_key": "",
+            "selected_notebook": "",
+            "selected_notebook_id": "",
         }
+
+    session_key = get_session_env("HERMES_SESSION_KEY", "")
+    route_mode = get_session_env("HERMES_SESSION_ROUTE_MODE", "")
+    selected_notebook = ""
+    selected_notebook_id = ""
+
+    if (route_mode or "").strip().lower() == "notebooklm-hub" and session_key:
+        try:
+            from gateway.notebooklm_hub_state import get_selected_notebook
+
+            selected = get_selected_notebook(session_key) or {}
+            selected_notebook = str(selected.get("notebook") or "")
+            selected_notebook_id = str(selected.get("notebook_id") or "")
+        except Exception:
+            pass
 
     return {
         "notebook": get_session_env("HERMES_SESSION_ROUTE_NOTEBOOK", ""),
         "notebook_id": get_session_env("HERMES_SESSION_ROUTE_NOTEBOOK_ID", ""),
         "route_target": get_session_env("HERMES_SESSION_ROUTE_TARGET", ""),
-        "route_mode": get_session_env("HERMES_SESSION_ROUTE_MODE", ""),
+        "route_mode": route_mode,
+        "session_key": session_key,
+        "selected_notebook": selected_notebook,
+        "selected_notebook_id": selected_notebook_id,
     }
 
 
@@ -64,8 +85,11 @@ def _resolve_target(
 ) -> dict[str, str | None]:
     bound = _get_bound_notebook()
     route_mode = (bound.get("route_mode") or "").strip().lower()
-    bound_notebook = bound["notebook"] if route_mode in ("", "notebooklm") else ""
-    bound_notebook_id = bound["notebook_id"] if route_mode in ("", "notebooklm") else ""
+    route_bound_modes = {"", "notebooklm", "notebooklm-bound"}
+    bound_notebook = bound["notebook"] if route_mode in route_bound_modes else ""
+    bound_notebook_id = bound["notebook_id"] if route_mode in route_bound_modes else ""
+    selected_notebook = bound["selected_notebook"] if route_mode == "notebooklm-hub" else ""
+    selected_notebook_id = bound["selected_notebook_id"] if route_mode == "notebooklm-hub" else ""
 
     if notebook_id:
         title = None
@@ -80,6 +104,8 @@ def _resolve_target(
             if resolved_id and str(resolved_id) != str(notebook_id):
                 raise ValueError("notebook and notebook_id refer to different notebooks")
             title = resolved.get("title") or notebook
+        elif selected_notebook_id == notebook_id:
+            title = selected_notebook or None
         elif bound_notebook_id == notebook_id:
             title = bound_notebook or None
         return {
@@ -94,6 +120,21 @@ def _resolve_target(
             "notebook": resolved.get("title") or notebook,
             "notebook_id": resolved.get("id") or None,
             "source": "lookup",
+        }
+
+    if selected_notebook_id:
+        return {
+            "notebook": selected_notebook or None,
+            "notebook_id": selected_notebook_id or None,
+            "source": "session-hub",
+        }
+
+    if selected_notebook:
+        resolved = resolve_notebook_reference(selected_notebook, profile=profile)
+        return {
+            "notebook": resolved.get("title") or selected_notebook or None,
+            "notebook_id": resolved.get("id") or None,
+            "source": "session-hub",
         }
 
     if bound_notebook_id:
@@ -141,6 +182,10 @@ def notebooklm_tool(
                 "route_target": bound["route_target"] or None,
                 "route_mode": bound["route_mode"] or None,
             }
+            status["selected_notebook"] = {
+                "notebook": bound["selected_notebook"] or None,
+                "notebook_id": bound["selected_notebook_id"] or None,
+            }
             return tool_result(status)
 
         if action == "list":
@@ -154,13 +199,17 @@ def notebooklm_tool(
                     "route_target": bound["route_target"] or None,
                     "route_mode": bound["route_mode"] or None,
                 },
+                selected_notebook={
+                    "notebook": bound["selected_notebook"] or None,
+                    "notebook_id": bound["selected_notebook_id"] or None,
+                },
             )
 
         if action == "resolve":
             resolved = _resolve_target(notebook=notebook, notebook_id=notebook_id, profile=profile)
             if not resolved["notebook"] and not resolved["notebook_id"]:
                 return tool_error(
-                    "No notebook is bound to this session. Provide notebook or notebook_id, or bind the topic route first."
+                    "No notebook is selected for this session. Provide notebook or notebook_id explicitly, or select a notebook in the NotebookLM hub."
                 )
             return tool_result(resolved)
 
@@ -168,7 +217,7 @@ def notebooklm_tool(
             resolved = _resolve_target(notebook=notebook, notebook_id=notebook_id, profile=profile)
             if not resolved["notebook_id"]:
                 return tool_error(
-                    "No notebook_id is available. Provide notebook_id explicitly or bind/resolve the notebook first."
+                    "No notebook_id is available. Provide notebook_id explicitly or select/resolve a notebook first."
                 )
             payload = get_notebook_metadata(
                 notebook_id=str(resolved["notebook_id"]),
@@ -182,7 +231,7 @@ def notebooklm_tool(
             resolved = _resolve_target(notebook=notebook, notebook_id=notebook_id, profile=profile)
             if not resolved["notebook_id"]:
                 return tool_error(
-                    "No notebook_id is available. Provide notebook_id explicitly or bind/resolve the notebook first."
+                    "No notebook_id is available. Provide notebook_id explicitly or select/resolve a notebook first."
                 )
             sources = list_sources(
                 notebook_id=str(resolved["notebook_id"]),
@@ -201,7 +250,7 @@ def notebooklm_tool(
             resolved = _resolve_target(notebook=notebook, notebook_id=notebook_id, profile=profile)
             if not resolved["notebook_id"]:
                 return tool_error(
-                    "No notebook_id is available. Provide notebook_id explicitly or bind/resolve the notebook first."
+                    "No notebook_id is available. Provide notebook_id explicitly or select/resolve a notebook first."
                 )
             payload = add_source(
                 notebook_id=str(resolved["notebook_id"]),
@@ -218,7 +267,7 @@ def notebooklm_tool(
             resolved = _resolve_target(notebook=notebook, notebook_id=notebook_id, profile=profile)
             if not resolved["notebook_id"]:
                 return tool_error(
-                    "No notebook_id is available. Provide notebook_id explicitly or bind/resolve the notebook first."
+                    "No notebook_id is available. Provide notebook_id explicitly or select/resolve a notebook first."
                 )
             payload = ask_notebook(question.strip(), notebook_id=str(resolved["notebook_id"]), profile=profile)
             if not isinstance(payload, dict):
@@ -233,7 +282,8 @@ def notebooklm_tool(
 
 def check_notebooklm_requirements() -> bool:
     bound = _get_bound_notebook()
-    if (bound.get("route_mode") or "").strip().lower() == "notebooklm":
+    route_mode = (bound.get("route_mode") or "").strip().lower()
+    if route_mode.startswith("notebooklm"):
         return True
     return _module_available("notebooklm")
 
@@ -242,8 +292,9 @@ NOTEBOOKLM_SCHEMA = {
     "name": "notebooklm",
     "description": (
         "Interact with NotebookLM notebooks. When the current gateway topic is bound to a "
-        "NotebookLM route, notebook_id defaults to that bound notebook. Actions: status, list, "
-        "resolve, metadata, source_list, source_add, ask."
+        "NotebookLM route, notebook_id defaults to that bound notebook; in notebooklm-hub topics, "
+        "the tool can also use the session-selected notebook. Actions: status, list, resolve, "
+        "metadata, source_list, source_add, ask."
     ),
     "parameters": {
         "type": "object",

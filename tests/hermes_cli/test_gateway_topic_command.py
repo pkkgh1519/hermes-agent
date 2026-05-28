@@ -32,6 +32,7 @@ def _args(action, **overrides):
         "label": "",
         "notebook": "",
         "profile": "default",
+        "mode": "",
         "free_response": False,
         "json": False,
     }
@@ -64,6 +65,58 @@ def test_bind_writes_exact_topic_route_for_topic_478(capsys):
         "ignored": False,
     }
     assert "telegram:-1003586456169:478" in capsys.readouterr().out
+
+
+
+def test_bind_writes_notebooklm_hub_route_without_bound_notebook(capsys):
+    from hermes_cli.gateway_topic import topic_command
+
+    topic_command(
+        _args(
+            "bind",
+            target="telegram:-1003586456169:3",
+            label="NotebookLM Hub",
+            mode="notebooklm-hub",
+            free_response=True,
+        )
+    )
+
+    cfg = read_raw_config()
+    route = cfg["gateway"]["topic_routes"]["telegram"]["-1003586456169:3"]
+
+    assert route == {
+        "label": "NotebookLM Hub",
+        "mode": "notebooklm-hub",
+        "notebook": "",
+        "free_response": True,
+        "ignored": False,
+    }
+    assert "telegram:-1003586456169:3" in capsys.readouterr().out
+
+
+
+def test_bind_defaults_to_manual_without_notebook(capsys):
+    from hermes_cli.gateway_topic import topic_command
+
+    topic_command(
+        _args(
+            "bind",
+            target="telegram:-1003586456169:999",
+            label="Manual Route",
+        )
+    )
+
+    cfg = read_raw_config()
+    route = cfg["gateway"]["topic_routes"]["telegram"]["-1003586456169:999"]
+
+    assert route == {
+        "label": "Manual Route",
+        "mode": "manual",
+        "notebook": "",
+        "free_response": False,
+        "ignored": False,
+    }
+    assert "telegram:-1003586456169:999" in capsys.readouterr().out
 
 
 
@@ -133,6 +186,50 @@ def test_bind_rejects_unknown_notebook_name(monkeypatch):
                 "bind",
                 target="telegram:-1003586456169:478",
                 notebook="missing",
+            )
+        )
+
+
+
+def test_bind_rejects_hub_mode_with_bound_notebook():
+    from hermes_cli.gateway_topic import topic_command
+
+    with pytest.raises(SystemExit, match="notebooklm-hub"):
+        topic_command(
+            _args(
+                "bind",
+                target="telegram:-1003586456169:3",
+                mode="notebooklm-hub",
+                notebook="NLM Lab / 제국 운영",
+            )
+        )
+
+
+
+def test_bind_rejects_notebook_mode_without_notebook():
+    from hermes_cli.gateway_topic import topic_command
+
+    with pytest.raises(SystemExit, match="--mode notebooklm requires --notebook"):
+        topic_command(
+            _args(
+                "bind",
+                target="telegram:-1003586456169:478",
+                mode="notebooklm",
+            )
+        )
+
+
+
+def test_bind_rejects_manual_mode_with_notebook():
+    from hermes_cli.gateway_topic import topic_command
+
+    with pytest.raises(SystemExit, match="--mode manual cannot be combined with --notebook"):
+        topic_command(
+            _args(
+                "bind",
+                target="telegram:-1003586456169:478",
+                mode="manual",
+                notebook="NLM Lab / 제국 운영",
             )
         )
 

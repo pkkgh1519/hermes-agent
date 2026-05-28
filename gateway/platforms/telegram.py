@@ -76,6 +76,7 @@ from gateway.platforms.base import (
     resolve_proxy_url,
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
+    SUPPORTED_IMAGE_DOCUMENT_TYPES,
     utf16_len,
 )
 from gateway.platforms.telegram_network import (
@@ -85,21 +86,12 @@ from gateway.platforms.telegram_network import (
 )
 from utils import atomic_replace
 
-_TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+_TELEGRAM_IMAGE_EXT_TO_MIME = dict(SUPPORTED_IMAGE_DOCUMENT_TYPES)
+_TELEGRAM_IMAGE_EXTENSIONS = set(_TELEGRAM_IMAGE_EXT_TO_MIME)
 _TELEGRAM_IMAGE_MIME_TO_EXT = {
-    "image/png": ".png",
-    "image/jpeg": ".jpg",
-    "image/jpg": ".jpg",
-    "image/webp": ".webp",
-    "image/gif": ".gif",
+    mime: ext for ext, mime in _TELEGRAM_IMAGE_EXT_TO_MIME.items()
 }
-_TELEGRAM_IMAGE_EXT_TO_MIME = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".webp": "image/webp",
-    ".gif": "image/gif",
-}
+_TELEGRAM_IMAGE_MIME_TO_EXT["image/jpg"] = ".jpg"
 
 
 def check_telegram_requirements() -> bool:
@@ -155,48 +147,6 @@ def check_telegram_requirements() -> bool:
     HTTPXRequest = _HR
     TELEGRAM_AVAILABLE = True
     return True
-
-
-_SUPPORTED_IMAGE_DOCUMENT_TYPES = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".webp": "image/webp",
-}
-
-_IMAGE_DOCUMENT_MIME_TO_EXT = {
-    "image/png": ".png",
-    "image/jpeg": ".jpg",
-    "image/jpg": ".jpg",
-    "image/webp": ".webp",
-}
-
-
-def _resolve_image_document_type(
-    filename: str | None,
-    mime_type: str | None,
-) -> tuple[str, str] | None:
-    """Return ``(extension, mime_type)`` for supported image documents.
-
-    Telegram users can send images either as compressed photos (``msg.photo``)
-    or as original files (``msg.document``).  Treat supported image documents as
-    image uploads internally so vision routing and PPT photo intake share the
-    existing image-cache path.
-    """
-    ext = ""
-    if filename:
-        _, ext = os.path.splitext(filename)
-        ext = ext.lower()
-
-    normalized_mime = (mime_type or "").split(";", 1)[0].strip().lower()
-    if ext in _SUPPORTED_IMAGE_DOCUMENT_TYPES:
-        return ext, _SUPPORTED_IMAGE_DOCUMENT_TYPES[ext]
-
-    if normalized_mime in _IMAGE_DOCUMENT_MIME_TO_EXT:
-        ext = _IMAGE_DOCUMENT_MIME_TO_EXT[normalized_mime]
-        return ext, _SUPPORTED_IMAGE_DOCUMENT_TYPES[ext]
-
-    return None
 
 
 # Matches every character that MarkdownV2 requires to be backslash-escaped
@@ -4486,34 +4436,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     video_mime_to_ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}
                     ext = video_mime_to_ext.get(doc.mime_type, "")
 
-                image_document_type = _resolve_image_document_type(original_filename, doc.mime_type)
-                if image_document_type:
-                    image_ext, image_mime_type = image_document_type
-                    MAX_DOC_BYTES = 20 * 1024 * 1024
-                    if not doc.file_size or doc.file_size > MAX_DOC_BYTES:
-                        event.text = (
-                            "The image document is too large or its size could not be verified. "
-                            "Maximum: 20 MB."
-                        )
-                        logger.info("[Telegram] Image document too large: %s bytes", doc.file_size)
-                        await self.handle_message(event)
-                        return
-
-                    file_obj = await doc.get_file()
-                    image_bytes = await file_obj.download_as_bytearray()
-                    cached_path = cache_image_from_bytes(bytes(image_bytes), ext=image_ext)
-                    event.media_urls = [cached_path]
-                    event.media_types = [image_mime_type]
-                    event.message_type = MessageType.PHOTO
-                    logger.info("[Telegram] Cached user image document at %s", cached_path)
-
-                    media_group_id = getattr(msg, "media_group_id", None)
-                    if media_group_id:
-                        await self._queue_media_group_event(str(media_group_id), event)
-                    else:
-                        await self.handle_message(event)
-                    return
-
                 if ext in SUPPORTED_VIDEO_TYPES:
                     file_obj = await doc.get_file()
                     video_bytes = await file_obj.download_as_bytearray()
@@ -4849,16 +4771,12 @@ class TelegramAdapter(BasePlatformAdapter):
         _route_mode = None
         _route_notebook = None
         _route_notebook_id = None
-        _route_multica = None
         if _exact_route is not None and thread_id_str is not None:
             _route_target = f"telegram:{chat.id}:{thread_id_str}"
             _route_label = _exact_route.get("label")
             _route_mode = _exact_route.get("mode")
             _route_notebook = _exact_route.get("notebook")
             _route_notebook_id = _exact_route.get("notebook_id")
-            _multica_value = _exact_route.get("multica")
-            if isinstance(_multica_value, dict):
-                _route_multica = _multica_value
 
         source = self.build_source(
             chat_id=str(chat.id),
@@ -4873,7 +4791,6 @@ class TelegramAdapter(BasePlatformAdapter):
             route_mode=_route_mode,
             route_notebook=_route_notebook,
             route_notebook_id=_route_notebook_id,
-            route_multica=_route_multica,
         )
         
         # Extract reply context if this message is a reply.
@@ -4924,7 +4841,6 @@ class TelegramAdapter(BasePlatformAdapter):
             route_mode=source.route_mode,
             route_notebook=source.route_notebook,
             route_notebook_id=source.route_notebook_id,
-            route_multica=source.route_multica,
             timestamp=message.date,
         )
 

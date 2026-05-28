@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 from plugins.memory.honcho.session import (
@@ -565,9 +566,12 @@ class TestSaveMessagesConfig:
         provider = HonchoMemoryProvider()
         provider._session_key = "telegram:123"
         provider._manager = MagicMock()
-        provider._config = SimpleNamespace(
-            message_max_chars=25000,
-            save_messages=False,
+        provider._config = cast(
+            Any,
+            SimpleNamespace(
+                message_max_chars=25000,
+                save_messages=False,
+            ),
         )
 
         provider.sync_turn("private user text", "private assistant text")
@@ -1589,7 +1593,7 @@ class TestDialecticLifecycleSmoke:
         self._await_thread(provider)
         assert mgr.dialectic_query.call_count == 2, "turn 4 cadence fire"
         _, kwargs = mgr.dialectic_query.call_args
-        assert kwargs.get("reasoning_level") in ("medium", "high"), \
+        assert kwargs.get("reasoning_level") in {"medium", "high"}, \
             f"long query must bump reasoning level above 'low'; got {kwargs.get('reasoning_level')}"
         assert provider._last_dialectic_turn == 4, "cadence tracker advances on success"
 

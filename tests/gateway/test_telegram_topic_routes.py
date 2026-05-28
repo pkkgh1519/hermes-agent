@@ -179,60 +179,8 @@ def test_build_message_event_attaches_exact_route_notebook_metadata():
 
 
 
-def test_build_message_event_attaches_exact_route_multica_metadata():
-    from gateway.platforms import telegram as telegram_mod
-
-    multica_cfg = {
-        "profile": "m1",
-        "workspace_slug": "hermes-m1-sandbox",
-        "workspace_id": "e938ecda-ec8b-4d73-8bf5-b07e30653ead",
-        "default_agent": "m1-sandbox-codex",
-        "helper": "/home/hwan/.hermes/multica-m1/scripts/multica_m1_helper.py",
-        "write_requires_chat_approval": True,
-        "write_requires_env_gate": True,
-        "allowed_scope": "sandbox-only",
-    }
-    adapter = _make_adapter(
-        require_mention=True,
-        topic_routes={
-            "-1003586456169:141": {
-                "label": "Multica Ops",
-                "mode": "multica-coding",
-                "free_response": True,
-                "ignored": False,
-                "multica": multica_cfg,
-            }
-        },
-    )
-    adapter._dm_topics = {}
-    adapter._dm_topics_config = []
-
-    message = SimpleNamespace(
-        text="상태",
-        caption=None,
-        entities=[],
-        caption_entities=[],
-        message_thread_id=141,
-        chat=SimpleNamespace(id=-1003586456169, type=telegram_mod.ChatType.SUPERGROUP, is_forum=True, title="AGI Jarvis"),
-        from_user=SimpleNamespace(id=111, full_name="Kim"),
-        reply_to_message=None,
-        message_id=10,
-        date=None,
-    )
-
-    assert adapter._should_process_message(message) is True
-    event = adapter._build_message_event(message, msg_type=SimpleNamespace(value="text"))
-
-    assert event.route_target == "telegram:-1003586456169:141"
-    assert event.route_label == "Multica Ops"
-    assert event.route_mode == "multica-coding"
-    assert event.route_multica == multica_cfg
-    assert event.source.route_target == "telegram:-1003586456169:141"
-    assert event.source.route_multica == multica_cfg
-
-
-
 def test_exact_topic_route_matches_general_forum_topic():
+
     from gateway.platforms import telegram as telegram_mod
 
     adapter = _make_adapter(

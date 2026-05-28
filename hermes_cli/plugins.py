@@ -580,6 +580,33 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- transcription provider registration ----------------------------------
+
+    def register_transcription_provider(self, provider) -> None:
+        """Register a transcription/STT backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.transcription_provider.TranscriptionProvider`. The
+        ``provider.name`` attribute is what ``stt.provider`` in
+        ``config.yaml`` matches against when routing explicit non-built-in
+        plugin STT calls.
+        """
+        from agent.transcription_provider import TranscriptionProvider
+        from agent.transcription_registry import register_provider as _register_transcription_provider
+
+        if not isinstance(provider, TranscriptionProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a transcription provider that does "
+                "not inherit from TranscriptionProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        _register_transcription_provider(provider)
+        logger.info(
+            "Plugin '%s' registered transcription provider: %s",
+            self.manifest.name, provider.name,
+        )
+
     # -- web search/extract provider registration ----------------------------
 
     def register_web_search_provider(self, provider) -> None:

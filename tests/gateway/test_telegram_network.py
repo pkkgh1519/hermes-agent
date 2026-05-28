@@ -15,6 +15,9 @@ path first, and on ConnectTimeout / ConnectError fall through to configured
 fallback IPs in order, then "stick" to whichever IP works.
 """
 
+import asyncio
+from typing import Any, cast
+
 import httpx
 import pytest
 
@@ -252,8 +255,8 @@ class TestFallbackTransport:
 
         resp = await transport.handle_async_request(_telegram_request())
         assert resp.status_code == 200
-        # Tried sticky (.220) first, then fell through to .221
-        assert [c["url_host"] for c in calls] == ["149.154.167.220", "149.154.167.221"]
+        # Tried stale sticky (.220), retried primary DNS, then fell through to .221
+        assert [c["url_host"] for c in calls] == ["149.154.167.220", "api.telegram.org", "149.154.167.221"]
         assert transport._sticky_ip == "149.154.167.221"
 
 
@@ -672,3 +675,49 @@ class TestDiscoverFallbackIps:
 
         ips = await tnet.discover_fallback_ips()
         assert ips == ["149.154.167.220"]
+
+
+@pytest.mark.asyncio
+async def test_sticky_fallback_failure_retries_primary_dns_path_first():
+    calls = []
+    sticky_ip = "149.154.167.220"
+    other_ip = "149.154.167.221"
+
+    transport = cast(Any, object.__new__(tnet.TelegramFallbackTransport))
+    transport._fallback_ips = [sticky_ip, other_ip]
+    transport._primary = FakeTransport(calls, {"api.telegram.org": "ok"})
+    transport._fallbacks = {
+        sticky_ip: FakeTransport(calls, {sticky_ip: "connect_error"}),
+        other_ip: FakeTransport(calls, {other_ip: "ok"}),
+    }
+    transport._sticky_ip = sticky_ip
+    transport._sticky_lock = asyncio.Lock()
+
+    response = await transport.handle_async_request(_telegram_request())
+
+    assert response.status_code == 200
+    assert [call["url_host"] for call in calls] == [sticky_ip, "api.telegram.org"]
+    assert transport._sticky_ip is None
+
+
+@pytest.mark.asyncio
+async def test_sticky_fallback_failure_then_primary_failure_tries_other_fallback():
+    calls = []
+    sticky_ip = "149.154.167.220"
+    other_ip = "149.154.167.221"
+
+    transport = cast(Any, object.__new__(tnet.TelegramFallbackTransport))
+    transport._fallback_ips = [sticky_ip, other_ip]
+    transport._primary = FakeTransport(calls, {"api.telegram.org": "connect_error"})
+    transport._fallbacks = {
+        sticky_ip: FakeTransport(calls, {sticky_ip: "connect_error"}),
+        other_ip: FakeTransport(calls, {other_ip: "ok"}),
+    }
+    transport._sticky_ip = sticky_ip
+    transport._sticky_lock = asyncio.Lock()
+
+    response = await transport.handle_async_request(_telegram_request())
+
+    assert response.status_code == 200
+    assert [call["url_host"] for call in calls] == [sticky_ip, "api.telegram.org", other_ip]
+    assert transport._sticky_ip == other_ip

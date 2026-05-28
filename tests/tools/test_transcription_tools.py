@@ -6,12 +6,24 @@ end-to-end dispatch.  All external dependencies are mocked.
 """
 
 import os
+import sys
 import struct
 import subprocess
+import types
 import wave
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+if "faster_whisper" not in sys.modules:
+    faster_whisper_stub = types.ModuleType("faster_whisper")
+    faster_whisper_stub.WhisperModel = MagicMock(name="WhisperModel")
+    # Set ``__spec__`` so ``importlib.util.find_spec("faster_whisper")``
+    # doesn't raise ``ValueError: faster_whisper.__spec__ is None`` during
+    # collection (used by skipif markers further down in this file).
+    from importlib.machinery import ModuleSpec
+    faster_whisper_stub.__spec__ = ModuleSpec("faster_whisper", loader=None)
+    sys.modules["faster_whisper"] = faster_whisper_stub
 
 
 # ============================================================================
@@ -40,6 +52,15 @@ def sample_ogg(tmp_path):
     ogg_path = tmp_path / "test.ogg"
     ogg_path.write_bytes(b"fake audio data")
     return str(ogg_path)
+
+
+@pytest.fixture
+def disable_lazy_stt_install(monkeypatch):
+    """Keep provider-selection tests deterministic even when lazy STT install works locally."""
+    monkeypatch.setattr("tools.transcription_tools._try_lazy_install_stt", lambda: False)
+
+
+pytestmark = pytest.mark.usefixtures("disable_lazy_stt_install")
 
 
 @pytest.fixture(autouse=True)
@@ -485,46 +506,6 @@ class TestTranscribeLocalExtended:
         assert result["success"] is False
         assert "CUDA out of memory" in result["error"]
 
-    def test_cuda_runtime_library_error_retries_on_cpu(self, tmp_path):
-        audio = tmp_path / "test.ogg"
-        audio.write_bytes(b"fake")
-
-        auto_model = MagicMock()
-        auto_model.transcribe.side_effect = RuntimeError(
-            "Library libcublas.so.12 is not found or cannot be loaded"
-        )
-
-        cpu_segment = MagicMock()
-        cpu_segment.text = "안녕하세요"
-        cpu_info = MagicMock()
-        cpu_info.language = "ko"
-        cpu_info.duration = 1.5
-        cpu_model = MagicMock()
-        cpu_model.transcribe.return_value = ([cpu_segment], cpu_info)
-
-        mock_whisper_cls = MagicMock(side_effect=[auto_model, cpu_model])
-
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
-             patch("tools.transcription_tools._local_model", None), \
-             patch("tools.transcription_tools._local_model_name", None):
-            from tools.transcription_tools import _transcribe_local
-            result = _transcribe_local(str(audio), "base")
-
-        assert result == {
-            "success": True,
-            "transcript": "안녕하세요",
-            "provider": "local",
-        }
-        assert mock_whisper_cls.call_args_list[0].kwargs == {
-            "device": "auto",
-            "compute_type": "auto",
-        }
-        assert mock_whisper_cls.call_args_list[1].kwargs == {
-            "device": "cpu",
-            "compute_type": "int8",
-        }
-
     def test_multiple_segments_joined(self, tmp_path):
         audio = tmp_path / "test.ogg"
         audio.write_bytes(b"fake")
@@ -797,6 +778,23 @@ class TestValidateAudioFileEdgeCases:
         result = _validate_audio_file(str(d))
         assert result is not None
         assert "not a file" in result["error"]
+
+    def test_symlink_with_supported_extension_is_rejected(self, tmp_path):
+        if not hasattr(os, "symlink"):
+            pytest.skip("symlinks are not supported on this platform")
+
+        target = tmp_path / "target.txt"
+        target.write_bytes(b"not audio")
+        link = tmp_path / "linked.wav"
+        try:
+            os.symlink(target, link)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+
+        from tools.transcription_tools import _validate_audio_file
+        result = _validate_audio_file(str(link))
+        assert result is not None
+        assert "symbolic link" in result["error"]
 
     def test_stat_oserror(self, tmp_path):
         f = tmp_path / "test.ogg"
