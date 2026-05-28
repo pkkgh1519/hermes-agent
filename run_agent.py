@@ -71,6 +71,77 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 
 
+def _responses_null_output_iterable_error(exc: BaseException) -> bool:
+    """True when the OpenAI SDK trips over terminal response.output=None."""
+    text = str(exc)
+    return isinstance(exc, TypeError) and "NoneType" in text and "not iterable" in text
+
+
+def _codex_backfilled_response(
+    output_items: list,
+    text_parts: list,
+    *,
+    has_tool_calls: bool,
+    model: Optional[str] = None,
+):
+    """Build a minimal Responses-like object from events already streamed."""
+    if output_items:
+        return SimpleNamespace(
+            output=list(output_items),
+            usage=None,
+            status="completed",
+            model=model,
+        )
+    if text_parts and not has_tool_calls:
+        assembled = "".join(text_parts)
+        return SimpleNamespace(
+            output=[SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=assembled)],
+            )],
+            usage=None,
+            status="completed",
+            model=model,
+        )
+    return None
+
+
+class _StreamErrorEvent(Exception):
+    """Synthesized provider error surfaced from a Responses ``error`` SSE frame.
+
+    Some Codex-style Responses backends (xAI for subscription/quota
+    failures, custom relays under malformed-tool-call conditions) emit a
+    standalone ``type=error`` frame instead of routing the failure
+    through ``response.failed`` or returning an HTTP 4xx.  The event-driven
+    streaming path raises this exception so the normal API-error summary and
+    classifier see a familiar ``.body`` / ``.status_code`` shape.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: Optional[str] = None,
+        param: Optional[str] = None,
+        status_code: Optional[int] = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.param = param
+        self.status_code = status_code
+        self.body: Dict[str, Any] = {
+            "error": {
+                "message": message,
+                "code": code,
+                "param": param,
+                "type": "error",
+            }
+        }
+
+
 _OPENAI_CLS_CACHE: Optional[type] = None
 
 
@@ -3491,7 +3562,11 @@ class AIAgent:
           1. ``providers.<id>.models.<model>.stale_timeout_seconds``
           2. ``providers.<id>.stale_timeout_seconds``
           3. ``HERMES_API_CALL_STALE_TIMEOUT`` env var
-          4. 300.0s default
+          4. 90.0s default (time-to-first-byte for non-streaming / Codex
+             internal-streaming requests; lowered from 300s in May 2026 so
+             fallback providers kick in faster when upstream providers
+             stall).  The detector still scales up for large contexts in
+             ``_compute_non_stream_stale_timeout``.
 
         Returns ``(timeout_seconds, uses_implicit_default)`` so the caller can
         preserve legacy behaviors that only apply when the user has *not*
@@ -3506,45 +3581,102 @@ class AIAgent:
         if env_timeout is not None:
             return float(env_timeout), False
 
-        return 300.0, True
+        return 90.0, True
 
     def _estimate_non_stream_payload_tokens(self, payload: Any) -> int:
-        """Estimate prompt tokens for non-stream stale-timeout scaling.
+        """Estimate context/load tokens from Chat Completions or Responses payloads.
 
         Chat-completions payloads keep prompt text in ``messages`` while
         Responses/Codex payloads keep it in ``input`` plus optional
-        ``instructions``.  The stale detector only needs a rough size bucket, so
-        reuse the existing char/4 heuristic while looking at the prompt-bearing
-        fields for both shapes.
+        ``instructions`` and ``tools``.  The stale detector only needs a rough
+        size bucket, so use the existing char/4 heuristic while looking at the
+        prompt-bearing fields for both shapes.
         """
-        if not payload:
-            return 0
-        if isinstance(payload, dict):
-            prompt_chars = 0
-            for key in ("messages", "input", "instructions"):
-                value = payload.get(key)
-                if value is not None:
-                    prompt_chars += len(str(value))
-            if prompt_chars:
-                return prompt_chars // 4
-            return len(str(payload)) // 4
-        if isinstance(payload, list):
-            return sum(len(str(v)) for v in payload) // 4
-        return len(str(payload)) // 4
 
-    def _compute_non_stream_stale_timeout(self, payload: Any) -> float:
-        """Compute the effective non-stream stale timeout for this request."""
+        def _chars(value: Any) -> int:
+            if value is None:
+                return 0
+            if isinstance(value, str):
+                return len(value)
+            return len(str(value))
+
+        def _message_chars(messages: Any) -> int:
+            if not isinstance(messages, list):
+                return _chars(messages)
+            return sum(_chars(item) for item in messages)
+
+        if isinstance(payload, list):
+            return _message_chars(payload) // 4
+
+        if isinstance(payload, dict):
+            messages = payload.get("messages")
+            if isinstance(messages, list):
+                total_chars = _message_chars(messages)
+                if "tools" in payload:
+                    total_chars += _chars(payload.get("tools"))
+                return total_chars // 4
+
+            if "input" in payload:
+                total_chars = (
+                    _chars(payload.get("input"))
+                    + _chars(payload.get("instructions"))
+                    + _chars(payload.get("tools"))
+                )
+                return total_chars // 4
+
+            return sum(_chars(value) for value in payload.values()) // 4
+
+        return _chars(payload) // 4
+
+    def _compute_non_stream_stale_timeout(self, api_payload: Any) -> float:
+        """Compute the effective non-stream stale timeout for this request.
+
+        Accepts either the full ``api_kwargs`` dict (Chat Completions or
+        Responses API) or a legacy ``messages`` list.  Context-size scaling
+        applies the same way to both shapes via
+        ``_estimate_non_stream_payload_tokens``.
+        """
         stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
         base_url = getattr(self, "_base_url", None) or self.base_url or ""
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
             return float("inf")
 
-        est_tokens = self._estimate_non_stream_payload_tokens(payload)
+        est_tokens = self._estimate_non_stream_payload_tokens(api_payload)
         if est_tokens > 100_000:
-            return max(stale_base, 600.0)
+            return max(stale_base, 240.0)
         if est_tokens > 50_000:
-            return max(stale_base, 450.0)
+            return max(stale_base, 150.0)
         return stale_base
+
+    def _codex_silent_hang_hint(self, model: Optional[str] = None) -> Optional[str]:
+        """Return an actionable hint for known Codex silent-reject patterns.
+
+        The ChatGPT Codex backend can accept the connection but emit no stream
+        events and no error for certain model/account combinations.  The stale
+        detector ends the hang; this helper makes the status/error actionable.
+        """
+        if self.api_mode != "codex_responses":
+            return None
+        is_codex_backend = (
+            self.provider == "openai-codex"
+            or (
+                getattr(self, "_base_url_hostname", "") == "chatgpt.com"
+                and "/backend-api/codex" in (getattr(self, "_base_url_lower", "") or "")
+            )
+        )
+        if not is_codex_backend:
+            return None
+        eff_model = (model if model is not None else self.model) or ""
+        model_lower = eff_model.lower()
+        if not re.search(r"(?:^|[/\-_])gpt-5\.5(?:$|[\-_])", model_lower):
+            return None
+        return (
+            f"Codex backend appears to be silently rejecting {eff_model!r} "
+            "on chatgpt.com/backend-api/codex (no stream events, no error). "
+            "Workaround: try `gpt-5.4` on the same OAuth profile, or `gpt-5.3-codex`, "
+            "or switch to a different model/provider in your fallback chain. "
+            "Some ChatGPT Codex accounts do not support `gpt-5.4-codex`."
+        )
 
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
@@ -6950,6 +7082,33 @@ class AIAgent:
                 exc,
             )
 
+    def _abort_request_openai_client(self, client: Any, *, reason: str) -> None:
+        """Cross-thread abort: shut sockets down without releasing FDs.
+
+        Stranger-thread stale/interrupt detectors should unblock the worker's
+        HTTP call without racing the worker for ``client.close()`` ownership.
+        We only shutdown the underlying sockets; the owning worker closes the
+        client in its own ``finally`` block.
+        """
+        if client is None:
+            return
+        try:
+            shutdown_count = self._force_close_tcp_sockets(client)
+            logger.info(
+                "OpenAI client aborted (%s, shared=False, tcp_force_closed=%d, "
+                "deferred_close=stranger_thread) %s",
+                reason,
+                shutdown_count,
+                self._client_log_context(),
+            )
+        except Exception as exc:
+            logger.debug(
+                "OpenAI client abort failed (%s, shared=False) %s error=%s",
+                reason,
+                self._client_log_context(),
+                exc,
+            )
+
     def _replace_primary_openai_client(self, *, reason: str) -> bool:
         with self._openai_client_lock():
             old_client = getattr(self, "client", None)
@@ -7115,237 +7274,14 @@ class AIAgent:
         self._close_openai_client(client, reason=reason, shared=False)
 
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
-        """Execute one streaming Responses API request and return the final response."""
-        import httpx as _httpx
-
-        active_client = client or self._ensure_primary_openai_client(reason="codex_stream_direct")
-        max_stream_retries = 1
-        has_tool_calls = False
-        first_delta_fired = False
-        # Accumulate streamed text so we can recover if get_final_response()
-        # returns empty output (e.g. chatgpt.com backend-api sends
-        # response.incomplete instead of response.completed).
-        self._codex_streamed_text_parts: list = []
-        for attempt in range(max_stream_retries + 1):
-            if self._interrupt_requested:
-                raise InterruptedError("Agent interrupted before Codex stream retry")
-            collected_output_items: list = []
-            try:
-                with active_client.responses.stream(**api_kwargs) as stream:
-                    for event in stream:
-                        self._touch_activity("receiving stream response")
-                        if self._interrupt_requested:
-                            break
-                        event_type = getattr(event, "type", "")
-                        # Fire callbacks on text content deltas (suppress during tool calls)
-                        if "output_text.delta" in event_type or event_type == "response.output_text.delta":
-                            delta_text = getattr(event, "delta", "")
-                            if delta_text:
-                                self._codex_streamed_text_parts.append(delta_text)
-                            if delta_text and not has_tool_calls:
-                                if not first_delta_fired:
-                                    first_delta_fired = True
-                                    if on_first_delta:
-                                        try:
-                                            on_first_delta()
-                                        except Exception:
-                                            pass
-                                self._fire_stream_delta(delta_text)
-                        # Track tool calls to suppress text streaming
-                        elif "function_call" in event_type:
-                            has_tool_calls = True
-                        # Fire reasoning callbacks
-                        elif "reasoning" in event_type and "delta" in event_type:
-                            reasoning_text = getattr(event, "delta", "")
-                            if reasoning_text:
-                                self._fire_reasoning_delta(reasoning_text)
-                        # Collect completed output items — some backends
-                        # (chatgpt.com/backend-api/codex) stream valid items
-                        # via response.output_item.done but the SDK's
-                        # get_final_response() returns an empty output list.
-                        elif event_type == "response.output_item.done":
-                            done_item = getattr(event, "item", None)
-                            if done_item is not None:
-                                collected_output_items.append(done_item)
-                        # Log non-completed terminal events for diagnostics
-                        elif event_type in {"response.incomplete", "response.failed"}:
-                            resp_obj = getattr(event, "response", None)
-                            status = getattr(resp_obj, "status", None) if resp_obj else None
-                            incomplete_details = getattr(resp_obj, "incomplete_details", None) if resp_obj else None
-                            logger.warning(
-                                "Codex Responses stream received terminal event %s "
-                                "(status=%s, incomplete_details=%s, streamed_chars=%d). %s",
-                                event_type, status, incomplete_details,
-                                sum(len(p) for p in self._codex_streamed_text_parts),
-                                self._client_log_context(),
-                            )
-                    final_response = stream.get_final_response()
-                    # PATCH: ChatGPT Codex backend streams valid output items
-                    # but get_final_response() can return an empty output list.
-                    # Backfill from collected items or synthesize from deltas.
-                    _out = getattr(final_response, "output", None)
-                    if isinstance(_out, list) and not _out:
-                        if collected_output_items:
-                            final_response.output = list(collected_output_items)
-                            logger.debug(
-                                "Codex stream: backfilled %d output items from stream events",
-                                len(collected_output_items),
-                            )
-                        elif self._codex_streamed_text_parts and not has_tool_calls:
-                            assembled = "".join(self._codex_streamed_text_parts)
-                            final_response.output = [SimpleNamespace(
-                                type="message",
-                                role="assistant",
-                                status="completed",
-                                content=[SimpleNamespace(type="output_text", text=assembled)],
-                            )]
-                            logger.debug(
-                                "Codex stream: synthesized output from %d text deltas (%d chars)",
-                                len(self._codex_streamed_text_parts), len(assembled),
-                            )
-                    return final_response
-            except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
-                if attempt < max_stream_retries:
-                    logger.debug(
-                        "Codex Responses stream transport failed (attempt %s/%s); retrying. %s error=%s",
-                        attempt + 1,
-                        max_stream_retries + 1,
-                        self._client_log_context(),
-                        exc,
-                    )
-                    continue
-                logger.debug(
-                    "Codex Responses stream transport failed; falling back to create(stream=True). %s error=%s",
-                    self._client_log_context(),
-                    exc,
-                )
-                return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
-            except RuntimeError as exc:
-                err_text = str(exc)
-                missing_completed = "response.completed" in err_text
-                # The OpenAI SDK's Responses streaming state machine raises
-                # ``RuntimeError("Expected to have received `response.created`
-                # before `<event-type>`")`` when the first SSE event from the
-                # server is anything other than ``response.created`` — and it
-                # discards the event's payload before we can read it.  Three
-                # real-world backends emit a different first frame:
-                #
-                #   * xAI on grok-4.x OAuth — sends ``error`` (issues
-                #     reported around the May 2026 SuperGrok rollout when
-                #     multi-turn conversations replay encrypted reasoning
-                #     content the OAuth tier rejects)
-                #   * codex-lb relays — send ``codex.rate_limits`` (#14634)
-                #   * custom Responses relays — send ``response.in_progress``
-                #     (#8133)
-                #
-                # In all three cases the underlying byte stream is still
-                # readable: a non-stream ``responses.create(stream=True)``
-                # fallback succeeds and surfaces the real provider error as
-                # a normal exception with body+status_code attached, which
-                # ``_summarize_api_error`` can then translate into a useful
-                # user-facing line.  Treat ``response.created`` prelude
-                # errors the same way we already treat ``response.completed``
-                # postlude errors.
-                prelude_error = (
-                    "Expected to have received `response.created`" in err_text
-                    or "Expected to have received \"response.created\"" in err_text
-                )
-                if (missing_completed or prelude_error) and attempt < max_stream_retries:
-                    logger.debug(
-                        "Responses stream %s (attempt %s/%s); retrying. %s",
-                        "prelude rejected" if prelude_error else "closed before completion",
-                        attempt + 1,
-                        max_stream_retries + 1,
-                        self._client_log_context(),
-                    )
-                    continue
-                if missing_completed or prelude_error:
-                    logger.debug(
-                        "Responses stream %s; falling back to create(stream=True). %s err=%s",
-                        "rejected before response.created" if prelude_error else "did not emit response.completed",
-                        self._client_log_context(),
-                        err_text,
-                    )
-                    return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
-                raise
+        """Forwarder — see ``agent.codex_runtime.run_codex_stream``."""
+        from agent.codex_runtime import run_codex_stream
+        return run_codex_stream(self, api_kwargs, client, on_first_delta)
 
     def _run_codex_create_stream_fallback(self, api_kwargs: dict, client: Any = None):
-        """Fallback path for stream completion edge cases on Codex-style Responses backends."""
-        active_client = client or self._ensure_primary_openai_client(reason="codex_create_stream_fallback")
-        fallback_kwargs = dict(api_kwargs)
-        fallback_kwargs["stream"] = True
-        fallback_kwargs = self._get_transport().preflight_kwargs(fallback_kwargs, allow_stream=True)
-        stream_or_response = active_client.responses.create(**fallback_kwargs)
-
-        # Compatibility shim for mocks or providers that still return a concrete response.
-        if hasattr(stream_or_response, "output"):
-            return stream_or_response
-        if not hasattr(stream_or_response, "__iter__"):
-            return stream_or_response
-
-        terminal_response = None
-        collected_output_items: list = []
-        collected_text_deltas: list = []
-        try:
-            for event in stream_or_response:
-                self._touch_activity("receiving stream response")
-                event_type = getattr(event, "type", None)
-                if not event_type and isinstance(event, dict):
-                    event_type = event.get("type")
-
-                # Collect output items and text deltas for backfill
-                if event_type == "response.output_item.done":
-                    done_item = getattr(event, "item", None)
-                    if done_item is None and isinstance(event, dict):
-                        done_item = event.get("item")
-                    if done_item is not None:
-                        collected_output_items.append(done_item)
-                elif event_type in {"response.output_text.delta",}:
-                    delta = getattr(event, "delta", "")
-                    if not delta and isinstance(event, dict):
-                        delta = event.get("delta", "")
-                    if delta:
-                        collected_text_deltas.append(delta)
-
-                if event_type not in {"response.completed", "response.incomplete", "response.failed"}:
-                    continue
-
-                terminal_response = getattr(event, "response", None)
-                if terminal_response is None and isinstance(event, dict):
-                    terminal_response = event.get("response")
-                if terminal_response is not None:
-                    # Backfill empty output from collected stream events
-                    _out = getattr(terminal_response, "output", None)
-                    if isinstance(_out, list) and not _out:
-                        if collected_output_items:
-                            terminal_response.output = list(collected_output_items)
-                            logger.debug(
-                                "Codex fallback stream: backfilled %d output items",
-                                len(collected_output_items),
-                            )
-                        elif collected_text_deltas:
-                            assembled = "".join(collected_text_deltas)
-                            terminal_response.output = [SimpleNamespace(
-                                type="message", role="assistant",
-                                status="completed",
-                                content=[SimpleNamespace(type="output_text", text=assembled)],
-                            )]
-                            logger.debug(
-                                "Codex fallback stream: synthesized from %d deltas (%d chars)",
-                                len(collected_text_deltas), len(assembled),
-                            )
-                    return terminal_response
-        finally:
-            close_fn = getattr(stream_or_response, "close", None)
-            if callable(close_fn):
-                try:
-                    close_fn()
-                except Exception:
-                    pass
-
-        if terminal_response is not None:
-            return terminal_response
-        raise RuntimeError("Responses create(stream=True) fallback did not emit a terminal response.")
+        """Forwarder — see ``agent.codex_runtime.run_codex_create_stream_fallback``."""
+        from agent.codex_runtime import run_codex_create_stream_fallback
+        return run_codex_create_stream_fallback(self, api_kwargs, client)
 
     def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
         if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
@@ -7768,37 +7704,57 @@ class AIAgent:
         Run the API call in a background thread so the main conversation loop
         can detect interrupts without waiting for the full HTTP round-trip.
 
-        Each worker thread gets its own OpenAI client instance. Interrupts only
-        close that worker-local client, so retries and other requests never
-        inherit a closed transport.
-
-        Includes a stale-call detector: if no response arrives within the
-        configured timeout, the connection is killed and an error raised so
-        the main retry loop can try again with backoff / credential rotation /
-        provider fallback.
+        Each worker thread gets its own OpenAI client instance. Interrupts and
+        stale detectors only abort that worker-local client's sockets from
+        stranger threads; the worker owns the final close.
         """
         result = {"response": None, "error": None}
-        request_client_holder = {"client": None}
+        request_client_holder = {"client": None, "owner_tid": None}
+        request_client_lock = threading.Lock()
+
+        def _set_request_client(client):
+            with request_client_lock:
+                request_client_holder["client"] = client
+                request_client_holder["owner_tid"] = threading.get_ident()
+            return client
+
+        def _close_request_client_once(reason: str) -> None:
+            with request_client_lock:
+                request_client = request_client_holder.get("client")
+                owner_tid = request_client_holder.get("owner_tid")
+                stranger_thread = (
+                    request_client is not None
+                    and owner_tid is not None
+                    and owner_tid != threading.get_ident()
+                )
+                if not stranger_thread:
+                    request_client_holder["client"] = None
+                    request_client_holder["owner_tid"] = None
+            if request_client is None:
+                return
+            if stranger_thread:
+                self._abort_request_openai_client(request_client, reason=reason)
+            else:
+                self._close_request_openai_client(request_client, reason=reason)
 
         def _call():
             try:
                 if self.api_mode == "codex_responses":
-                    request_client_holder["client"] = self._create_request_openai_client(
-                        reason="codex_stream_request",
-                        api_kwargs=api_kwargs,
+                    request_client = _set_request_client(
+                        self._create_request_openai_client(
+                            reason="codex_stream_request",
+                            api_kwargs=api_kwargs,
+                        )
                     )
                     result["response"] = self._run_codex_stream(
                         api_kwargs,
-                        client=request_client_holder["client"],
+                        client=request_client,
                         on_first_delta=getattr(self, "_codex_on_first_delta", None),
                     )
                 elif self.api_mode == "anthropic_messages":
                     result["response"] = self._anthropic_messages_create(api_kwargs)
                 elif self.api_mode == "bedrock_converse":
                     # Bedrock uses boto3 directly — no OpenAI client needed.
-                    # normalize_converse_response produces an OpenAI-compatible
-                    # SimpleNamespace so the rest of the agent loop can treat
-                    # bedrock responses like chat_completions responses.
                     from agent.bedrock_adapter import (
                         _get_bedrock_runtime_client,
                         invalidate_runtime_client,
@@ -7811,32 +7767,38 @@ class AIAgent:
                     try:
                         raw_response = client.converse(**api_kwargs)
                     except Exception as _bedrock_exc:
-                        # Evict the cached client on stale-connection failures
-                        # so the outer retry loop builds a fresh client/pool.
                         if is_stale_connection_error(_bedrock_exc):
                             invalidate_runtime_client(region)
                         raise
                     result["response"] = normalize_converse_response(raw_response)
                 else:
-                    request_client_holder["client"] = self._create_request_openai_client(
-                        reason="chat_completion_request",
-                        api_kwargs=api_kwargs,
+                    request_client = _set_request_client(
+                        self._create_request_openai_client(
+                            reason="chat_completion_request",
+                            api_kwargs=api_kwargs,
+                        )
                     )
-                    result["response"] = request_client_holder["client"].chat.completions.create(**api_kwargs)
+                    result["response"] = request_client.chat.completions.create(**api_kwargs)
             except Exception as e:
                 result["error"] = e
             finally:
-                request_client = request_client_holder.get("client")
-                if request_client is not None:
-                    self._close_request_openai_client(request_client, reason="request_complete")
+                _close_request_client_once("request_complete")
 
-        # ── Stale-call timeout (mirrors streaming stale detector) ────────
-        # Non-streaming calls return nothing until the full response is
-        # ready.  Without this, a hung provider can block for the full
-        # httpx timeout (default 1800s) with zero feedback.  The stale
-        # detector kills the connection early so the main retry loop can
-        # apply richer recovery (credential rotation, provider fallback).
         _stale_timeout = self._compute_non_stream_stale_timeout(api_kwargs)
+
+        # Codex Responses uses an internal event stream.  If the connection is
+        # accepted but *no* SSE event arrives, reconnect quickly instead of
+        # waiting for the full stale timeout.  Once any event arrives, the
+        # stream is healthy enough to use the normal stale detector.
+        _ttfb_enabled = self.api_mode == "codex_responses"
+        try:
+            _ttfb_timeout = float(os.getenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "45"))
+        except (TypeError, ValueError):
+            _ttfb_timeout = 45.0
+        if _ttfb_timeout <= 0:
+            _ttfb_enabled = False
+        if _ttfb_enabled:
+            self._codex_stream_last_event_ts = None
 
         _call_start = time.time()
         self._touch_activity("waiting for non-streaming API response")
@@ -7848,64 +7810,126 @@ class AIAgent:
             t.join(timeout=0.3)
             _poll_count += 1
 
-            # Touch activity every ~30s so the gateway's inactivity
-            # monitor knows we're alive while waiting for the response.
             if _poll_count % 100 == 0:  # 100 × 0.3s = 30s
                 _elapsed = time.time() - _call_start
                 self._touch_activity(
                     f"waiting for non-streaming response ({int(_elapsed)}s elapsed)"
                 )
 
-            # Stale-call detector: kill the connection if no response
-            # arrives within the configured timeout.
             _elapsed = time.time() - _call_start
+
+            if (
+                _ttfb_enabled
+                and _elapsed > _ttfb_timeout
+                and getattr(self, "_codex_stream_last_event_ts", None) is None
+            ):
+                _silent_hint: Optional[str] = None
+                _hint_fn = getattr(self, "_codex_silent_hang_hint", None)
+                if callable(_hint_fn):
+                    try:
+                        _silent_hint = _hint_fn(model=api_kwargs.get("model"))
+                    except Exception:
+                        _silent_hint = None
+                logger.warning(
+                    "Codex stream produced no bytes within TTFB cutoff "
+                    "(%.0fs > %.0fs, model=%s). Backend accepted the connection "
+                    "but sent no stream events. Killing connection so the retry "
+                    "loop can reconnect.",
+                    _elapsed, _ttfb_timeout, api_kwargs.get("model", "unknown"),
+                )
+                if _silent_hint:
+                    self._emit_status(
+                        f"⚠️ No first byte from provider in {int(_elapsed)}s "
+                        f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
+                        f"Reconnecting. {_silent_hint}"
+                    )
+                else:
+                    self._emit_status(
+                        f"⚠️ No first byte from provider in {int(_elapsed)}s "
+                        f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
+                        f"Reconnecting."
+                    )
+                try:
+                    _close_request_client_once("codex_ttfb_kill")
+                except Exception:
+                    pass
+                self._touch_activity(
+                    f"codex stream killed after {int(_elapsed)}s with no first byte"
+                )
+                t.join(timeout=2.0)
+                if result["error"] is None and result["response"] is None:
+                    if _silent_hint:
+                        result["error"] = TimeoutError(
+                            f"Codex stream produced no bytes within {int(_elapsed)}s "
+                            f"(TTFB threshold: {int(_ttfb_timeout)}s). {_silent_hint}"
+                        )
+                    else:
+                        result["error"] = TimeoutError(
+                            f"Codex stream produced no bytes within {int(_elapsed)}s "
+                            f"(TTFB threshold: {int(_ttfb_timeout)}s)"
+                        )
+                break
+
             if _elapsed > _stale_timeout:
                 _est_ctx = self._estimate_non_stream_payload_tokens(api_kwargs)
+                _silent_hint: Optional[str] = None
+                _hint_fn = getattr(self, "_codex_silent_hang_hint", None)
+                if callable(_hint_fn):
+                    try:
+                        _silent_hint = _hint_fn(model=api_kwargs.get("model"))
+                    except Exception:
+                        _silent_hint = None
                 logger.warning(
                     "Non-streaming API call stale for %.0fs (threshold %.0fs). "
                     "model=%s context=~%s tokens. Killing connection.",
                     _elapsed, _stale_timeout,
                     api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
                 )
-                self._emit_status(
-                    f"⚠️ No response from provider for {int(_elapsed)}s "
-                    f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
-                    f"Aborting call."
-                )
+                if _silent_hint:
+                    self._emit_status(
+                        f"⚠️ No response from provider for {int(_elapsed)}s "
+                        f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
+                        f"{_silent_hint}"
+                    )
+                else:
+                    self._emit_status(
+                        f"⚠️ No response from provider for {int(_elapsed)}s "
+                        f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
+                        f"Aborting call."
+                    )
                 try:
                     if self.api_mode == "anthropic_messages":
                         self._anthropic_client.close()
                         self._rebuild_anthropic_client()
                     else:
-                        rc = request_client_holder.get("client")
-                        if rc is not None:
-                            self._close_request_openai_client(rc, reason="stale_call_kill")
+                        _close_request_client_once("stale_call_kill")
                 except Exception:
                     pass
                 self._touch_activity(
                     f"stale non-streaming call killed after {int(_elapsed)}s"
                 )
-                # Wait briefly for the thread to notice the closed connection.
                 t.join(timeout=2.0)
                 if result["error"] is None and result["response"] is None:
-                    result["error"] = TimeoutError(
-                        f"Non-streaming API call timed out after {int(_elapsed)}s "
-                        f"with no response (threshold: {int(_stale_timeout)}s)"
-                    )
+                    if _silent_hint:
+                        result["error"] = TimeoutError(
+                            f"Non-streaming API call timed out after {int(_elapsed)}s "
+                            f"with no response (threshold: {int(_stale_timeout)}s). "
+                            f"{_silent_hint}"
+                        )
+                    else:
+                        result["error"] = TimeoutError(
+                            f"Non-streaming API call timed out after {int(_elapsed)}s "
+                            f"with no response (threshold: {int(_stale_timeout)}s)"
+                        )
                 break
 
             if self._interrupt_requested:
-                # Force-close the in-flight worker-local HTTP connection to stop
-                # token generation without poisoning the shared client used to
-                # seed future retries.
                 try:
                     if self.api_mode == "anthropic_messages":
                         self._anthropic_client.close()
                         self._rebuild_anthropic_client()
                     else:
-                        request_client = request_client_holder.get("client")
-                        if request_client is not None:
-                            self._close_request_openai_client(request_client, reason="interrupt_abort")
+                        _close_request_client_once("interrupt_abort")
                 except Exception:
                     pass
                 raise InterruptedError("Agent interrupted during API call")

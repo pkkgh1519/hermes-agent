@@ -266,7 +266,7 @@ def test_resolved_api_call_stale_timeout_priority(monkeypatch, tmp_path):
     assert agent2._resolved_api_call_stale_timeout_base() == (999.0, False)
 
     monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
-    assert agent2._resolved_api_call_stale_timeout_base() == (300.0, True)
+    assert agent2._resolved_api_call_stale_timeout_base() == (90.0, True)
 
 
 def test_default_non_stream_stale_timeout_auto_disables_for_local_endpoints(monkeypatch, tmp_path):
@@ -339,7 +339,7 @@ def test_codex_responses_input_payload_extends_non_stream_stale_timeout(monkeypa
         ],
     }
 
-    assert agent._compute_non_stream_stale_timeout(payload) == 450.0
+    assert agent._compute_non_stream_stale_timeout(payload) == 150.0
 
 
 def test_interruptible_api_call_uses_full_payload_for_stale_timeout(monkeypatch, tmp_path):
