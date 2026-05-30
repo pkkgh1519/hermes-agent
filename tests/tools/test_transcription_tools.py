@@ -54,12 +54,6 @@ def sample_ogg(tmp_path):
     return str(ogg_path)
 
 
-@pytest.fixture
-def disable_lazy_stt_install(monkeypatch):
-    """Keep provider-selection tests deterministic even when lazy STT install works locally."""
-    monkeypatch.setattr("tools.transcription_tools._try_lazy_install_stt", lambda: False)
-
-
 pytestmark = pytest.mark.usefixtures("disable_lazy_stt_install")
 
 

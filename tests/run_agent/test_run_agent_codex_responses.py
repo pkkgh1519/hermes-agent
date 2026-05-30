@@ -54,7 +54,6 @@ def _build_agent(monkeypatch):
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
     agent._save_trajectory = lambda messages, user_message, completed: None
-    agent._save_session_log = lambda messages: None
     return agent
 
 
@@ -75,7 +74,6 @@ def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
     agent._save_trajectory = lambda messages, user_message, completed: None
-    agent._save_session_log = lambda messages: None
     return agent
 
 
@@ -156,27 +154,13 @@ def _codex_ack_message_response(text: str):
     )
 
 
-class _FakeResponsesStream:
-    def __init__(self, *, final_response=None, final_error=None):
-        self._final_response = final_response
-        self._final_error = final_error
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def __iter__(self):
-        return iter(())
-
-    def get_final_response(self):
-        if self._final_error is not None:
-            raise self._final_error
-        return self._final_response
-
-
 class _FakeCreateStream:
+    """Iterable-only fake for ``responses.create(stream=True)`` outputs.
+
+    The event-driven Codex path expects an iterable that yields SSE events;
+    tests use this to drive it through the same code paths the wire does.
+    """
+
     def __init__(self, events):
         self._events = list(events)
         self.closed = False
@@ -329,7 +313,10 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert kwargs["parallel_tool_calls"] is True
     assert isinstance(kwargs["prompt_cache_key"], str)
     assert len(kwargs["prompt_cache_key"]) > 0
-    assert "timeout" not in kwargs
+    # ``timeout`` is now wired from ``_resolved_api_call_timeout`` (default 1800s)
+    # so per-provider ``request_timeout_seconds`` actually reaches the SDK.
+    assert isinstance(kwargs.get("timeout"), float)
+    assert kwargs["timeout"] > 0
     assert "max_tokens" not in kwargs
     assert "extra_body" not in kwargs
 
@@ -356,7 +343,6 @@ def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
     agent._save_trajectory = lambda messages, user_message, completed: None
-    agent._save_session_log = lambda messages: None
 
     kwargs = agent._build_api_kwargs(
         [
@@ -386,7 +372,6 @@ def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
         agent._cleanup_task_resources = lambda task_id: None
         agent._persist_session = lambda messages, history=None: None
         agent._save_trajectory = lambda messages, user_message, completed: None
-        agent._save_session_log = lambda messages: None
 
         kwargs = agent._build_api_kwargs(
             [
@@ -676,7 +661,6 @@ def _build_xai_oauth_agent(monkeypatch):
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
     agent._save_trajectory = lambda messages, user_message, completed: None
-    agent._save_session_log = lambda messages: None
     return agent
 
 
@@ -1138,6 +1122,29 @@ def test_preflight_codex_api_kwargs_allows_service_tier(monkeypatch):
     from agent.codex_responses_adapter import _preflight_codex_api_kwargs
     result = _preflight_codex_api_kwargs(kwargs)
     assert result["service_tier"] == "priority"
+
+
+def test_preflight_codex_api_kwargs_preserves_positive_timeout(monkeypatch):
+    """Positive numeric timeouts survive preflight so the SDK honors them."""
+    agent = _build_agent(monkeypatch)
+    kwargs = _codex_request_kwargs()
+    kwargs["timeout"] = 600.0
+
+    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+    result = _preflight_codex_api_kwargs(kwargs)
+    assert result["timeout"] == 600.0
+
+
+def test_preflight_codex_api_kwargs_drops_invalid_timeout(monkeypatch):
+    """Zero, negative, inf, and booleans are all dropped — not passed to SDK."""
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+
+    for bad in (0, -1, float("inf"), True, False, "300", None):
+        kwargs = _codex_request_kwargs()
+        kwargs["timeout"] = bad
+        result = _preflight_codex_api_kwargs(kwargs)
+        assert "timeout" not in result, f"timeout={bad!r} should be dropped"
 
 
 def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
@@ -2047,3 +2054,107 @@ def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
     # IDs must be stripped — with store=False the API 404s on id lookups.
     for it in reasoning_items:
         assert "id" not in it
+
+
+def test_run_conversation_codex_disables_reasoning_replay_after_invalid_encrypted_content(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.provider = "custom"
+    agent.base_url = "https://api.example.com/v1"
+
+    request_payloads = []
+
+    class _InvalidEncryptedContentError(Exception):
+        def __init__(self):
+            super().__init__(
+                "Error code: 400 - The encrypted content for item rs_001 could not be verified. "
+                "Reason: Encrypted content could not be decrypted or parsed."
+            )
+            self.status_code = 400
+            self.body = {
+                "error": {
+                    "message": (
+                        '{"error":{"message":"The encrypted content for item rs_001 could not be verified. '
+                        'Reason: Encrypted content could not be decrypted or parsed.",'
+                        '"type":"invalid_request_error","param":"","code":"invalid_encrypted_content"}}'
+                    ),
+                    "type": "400",
+                }
+            }
+
+    responses = [_InvalidEncryptedContentError(), _codex_message_response("Recovered without replay.")]
+
+    def _fake_api_call(api_kwargs):
+        request_payloads.append(api_kwargs)
+        current = responses.pop(0)
+        if isinstance(current, Exception):
+            raise current
+        return current
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    history = [
+        {
+            "role": "assistant",
+            "content": "",
+            "finish_reason": "incomplete",
+            "codex_reasoning_items": [
+                {"type": "reasoning", "id": "rs_001", "encrypted_content": "enc_bad", "summary": []},
+            ],
+        }
+    ]
+
+    result = agent.run_conversation("continue", conversation_history=history)
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered without replay."
+    assert len(request_payloads) == 2
+    assert any(item.get("type") == "reasoning" for item in request_payloads[0]["input"])
+    assert not any(item.get("type") == "reasoning" for item in request_payloads[1]["input"])
+    assert request_payloads[0].get("include") == ["reasoning.encrypted_content"]
+    assert request_payloads[1].get("include") == []
+    assert result["messages"][0].get("codex_reasoning_items") is None
+    assert agent._codex_reasoning_replay_enabled is False
+
+
+def test_run_conversation_codex_invalid_encrypted_content_without_replay_state_does_not_disable_replay(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.provider = "custom"
+    agent.base_url = "https://api.example.com/v1"
+    monkeypatch.setattr(run_agent, "jittered_backoff", lambda *args, **kwargs: 0)
+
+    request_payloads = []
+
+    class _InvalidEncryptedContentError(Exception):
+        def __init__(self):
+            super().__init__("Error code: 400 - bad request")
+            self.status_code = 400
+            self.body = {
+                "error": {
+                    "code": "INVALID_ENCRYPTED_CONTENT",
+                    "message": "Bad request",
+                }
+            }
+
+    responses = [_InvalidEncryptedContentError(), _codex_message_response("Recovered after generic retry.")]
+
+    def _fake_api_call(api_kwargs):
+        request_payloads.append(api_kwargs)
+        current = responses.pop(0)
+        if isinstance(current, Exception):
+            raise current
+        return current
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation(
+        "continue",
+        conversation_history=[{"role": "assistant", "content": "No replay state here."}],
+    )
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered after generic retry."
+    assert len(request_payloads) == 2
+    assert all(payload.get("include") == ["reasoning.encrypted_content"] for payload in request_payloads)
+    assert all(not any(item.get("type") == "reasoning" for item in payload["input"]) for payload in request_payloads)
+    assert agent._codex_reasoning_replay_enabled is True
+    assert result["messages"][0].get("codex_reasoning_items") is None
