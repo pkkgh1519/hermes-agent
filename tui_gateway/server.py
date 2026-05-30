@@ -1681,26 +1681,30 @@ def _wire_callbacks(sid: str):
     set_secret_capture_callback(secret_cb)
 
 
-def _resolve_personality_prompt(cfg: dict) -> str:
-    """Resolve the active personality overlay into a system prompt string."""
-    from hermes_cli.personalities import resolve_active_personality_prompt
-
-    _, prompt = resolve_active_personality_prompt(cfg)
-    return prompt
-
-
 def _render_personality_prompt(value) -> str:
-    from hermes_cli.personalities import render_personality_prompt
-
-    return render_personality_prompt(value)
+    if isinstance(value, dict):
+        parts = [value.get("system_prompt", "")]
+        if value.get("tone"):
+            parts.append(f'Tone: {value["tone"]}')
+        if value.get("style"):
+            parts.append(f'Style: {value["style"]}')
+        return "\n".join(p for p in parts if p)
+    return str(value)
 
 
 def _available_personalities(cfg: dict | None = None) -> dict:
-    from hermes_cli.personalities import available_personalities
+    try:
+        from cli import load_cli_config
 
-    cfg = cfg or _load_cfg()
-    custom = cfg.get("agent", {}).get("personalities", {}) if isinstance(cfg, dict) else {}
-    return available_personalities(custom)
+        return (load_cli_config().get("agent") or {}).get("personalities", {}) or {}
+    except Exception:
+        try:
+            from hermes_cli.config import load_config as _load_full_cfg
+
+            return (_load_full_cfg().get("agent") or {}).get("personalities", {}) or {}
+        except Exception:
+            cfg = cfg or _load_cfg()
+            return (cfg.get("agent") or {}).get("personalities", {}) or {}
 
 
 def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str]:
@@ -1859,12 +1863,8 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     cfg = _load_cfg()
-    from hermes_cli.personalities import compose_system_prompt
-
     agent_cfg = cfg.get("agent") or {}
-    base_prompt = agent_cfg.get("system_prompt", "") or ""
-    personality_prompt = _resolve_personality_prompt(cfg)
-    system_prompt = compose_system_prompt(base_prompt, personality_prompt)
+    system_prompt = (agent_cfg.get("system_prompt", "") or "").strip()
     startup_skills = _parse_tui_skills_env()
     if startup_skills:
         from agent.skill_commands import build_preloaded_skills_prompt
@@ -4102,13 +4102,9 @@ def _(rid, params: dict) -> dict:
                 _save_cfg(cfg)
             elif key == "personality":
                 sid_key = params.get("session_id", "")
-                pname, overlay_prompt = _validate_personality(str(value or ""), cfg)
-                from hermes_cli.personalities import compose_system_prompt
-
-                base_prompt = cfg.get("agent", {}).get("system_prompt", "") or ""
-                new_prompt = compose_system_prompt(base_prompt, overlay_prompt)
+                pname, new_prompt = _validate_personality(str(value or ""), cfg)
                 _write_config_key("display.personality", pname)
-                _write_config_key("agent.active_personality", pname)
+                _write_config_key("agent.system_prompt", new_prompt)
                 nv = str(value or "default")
                 history_reset, info = _apply_personality_to_session(
                     sid_key, session, new_prompt

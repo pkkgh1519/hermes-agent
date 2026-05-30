@@ -525,10 +525,6 @@ DEFAULT_CONFIG = {
         # (60+ tool iterations with tiny output) before users assume the
         # bot is dead and /restart.
         "gateway_notify_interval": 180,
-        # Optional always-on base prompt and personality overlay selection.
-        "system_prompt": "",
-        "active_personality": "",
-        "personalities": {},
         # Freshness window for the gateway auto-continue note (seconds).
         # After a gateway crash/restart/SIGTERM mid-run, the next user
         # message gets a "[System note: your previous turn was

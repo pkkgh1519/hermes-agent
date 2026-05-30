@@ -1884,13 +1884,7 @@ def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
         server, "_session_info", lambda agent: {"model": getattr(agent, "model", "?")}
     )
     monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
-    monkeypatch.setattr(
-        server,
-        "_load_cfg",
-        lambda: {"agent": {"system_prompt": "Base prompt."}},
-    )
-    writes = []
-    monkeypatch.setattr(server, "_write_config_key", lambda path, value: writes.append((path, value)))
+    monkeypatch.setattr(server, "_write_config_key", lambda path, value: None)
 
     resp = server.handle_request(
         {
@@ -1909,12 +1903,10 @@ def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
     assert "personality" in session["history"][1]["content"].lower()
     assert "You are helpful." in session["history"][1]["content"]
     assert session["history_version"] == 5
-    # Agent's composed system prompt was updated in-place; cached prompt untouched
-    assert agent.ephemeral_system_prompt == "Base prompt.\n\nYou are helpful."
+    # Agent's system prompt was updated in-place; cached prompt untouched
+    assert agent.ephemeral_system_prompt == "You are helpful."
     assert agent._cached_system_prompt == "old"
     assert ("session.info", "sid", {"model": "?"}) in emits
-    assert ("agent.active_personality", "helpful") in writes
-    assert all(path != "agent.system_prompt" for path, _ in writes)
 
 
 def test_session_compress_uses_compress_helper(monkeypatch):

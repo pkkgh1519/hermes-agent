@@ -1701,16 +1701,6 @@ class GatewayRunner:
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
 
-    def _path_is_within_root(self, path_str: str, root: Path) -> bool:
-        """Return True when *path_str* resolves under *root*."""
-        try:
-            resolved_path = Path(path_str).expanduser().resolve()
-            resolved_root = root.expanduser().resolve()
-            resolved_path.relative_to(resolved_root)
-            return True
-        except Exception:
-            return False
-
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
         """Return whether Telegram DM topic mode is active for this chat."""
         if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
@@ -2297,11 +2287,10 @@ class GatewayRunner:
 
     @staticmethod
     def _load_ephemeral_system_prompt() -> str:
-        """Load effective ephemeral system prompt from config or env var.
+        """Load ephemeral system prompt from config or env var.
         
         Checks HERMES_EPHEMERAL_SYSTEM_PROMPT env var first, then falls back to
-        composing agent.system_prompt with the optional agent.active_personality
-        overlay in ~/.hermes/config.yaml.
+        agent.system_prompt in ~/.hermes/config.yaml.
         """
         prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
         if prompt:
@@ -2312,8 +2301,7 @@ class GatewayRunner:
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
-                from hermes_cli.personalities import compose_config_system_prompt
-                return compose_config_system_prompt(cfg).strip()
+                return (cfg_get(cfg, "agent", "system_prompt", default="") or "").strip()
         except Exception:
             pass
         return ""
@@ -9518,25 +9506,16 @@ class GatewayRunner:
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
         from hermes_constants import display_hermes_home
-        from hermes_cli.personalities import (
-            CLEAR_PERSONALITY_NAMES,
-            available_personalities,
-            compose_system_prompt,
-            personality_preview,
-            render_personality_prompt,
-        )
 
         args = event.get_command_args().strip().lower()
         config_path = _hermes_home / 'config.yaml'
 
         try:
             config = _load_gateway_config()
-            custom_personalities = cfg_get(config, "agent", "personalities", default={}) or {}
+            personalities = cfg_get(config, "agent", "personalities", default={})
         except Exception:
             config = {}
-            custom_personalities = {}
-
-        personalities = available_personalities(custom_personalities)
+            personalities = {}
 
         if not personalities:
             return t("gateway.personality.none_configured", path=display_hermes_home())
@@ -9545,46 +9524,48 @@ class GatewayRunner:
             lines = [t("gateway.personality.header")]
             lines.append(t("gateway.personality.none_option"))
             for name, prompt in personalities.items():
-                lines.append(t("gateway.personality.item", name=name, preview=personality_preview(prompt)))
+                if isinstance(prompt, dict):
+                    preview = prompt.get("description") or prompt.get("system_prompt", "")[:50]
+                else:
+                    preview = prompt[:50] + "..." if len(prompt) > 50 else prompt
+                lines.append(t("gateway.personality.item", name=name, preview=preview))
             lines.append(t("gateway.personality.usage"))
             return "\n".join(lines)
 
-        if args in CLEAR_PERSONALITY_NAMES:
+        def _resolve_prompt(value):
+            if isinstance(value, dict):
+                parts = [value.get("system_prompt", "")]
+                if value.get("tone"):
+                    parts.append(f'Tone: {value["tone"]}')
+                if value.get("style"):
+                    parts.append(f'Style: {value["style"]}')
+                return "\n".join(p for p in parts if p)
+            return str(value)
+
+        if args in {"none", "default", "neutral"}:
             try:
                 if "agent" not in config or not isinstance(config.get("agent"), dict):
                     config["agent"] = {}
-                base_prompt = config["agent"].get("system_prompt", "") or ""
-                config["agent"]["active_personality"] = ""
-                display_config = config.get("display")
-                if not isinstance(display_config, dict):
-                    display_config = {}
-                    config["display"] = display_config
-                display_config["personality"] = ""
+                config["agent"]["system_prompt"] = ""
                 atomic_yaml_write(config_path, config)
             except Exception as e:
                 return t("gateway.personality.save_failed", error=str(e))
-            self._ephemeral_system_prompt = base_prompt.strip()
+            self._ephemeral_system_prompt = ""
             return t("gateway.personality.cleared")
         elif args in personalities:
-            overlay_prompt = render_personality_prompt(personalities[args])
+            new_prompt = _resolve_prompt(personalities[args])
 
-            # Write active personality to config without overwriting base system_prompt.
+            # Write to config.yaml, same pattern as CLI save_config_value.
             try:
                 if "agent" not in config or not isinstance(config.get("agent"), dict):
                     config["agent"] = {}
-                base_prompt = config["agent"].get("system_prompt", "") or ""
-                config["agent"]["active_personality"] = args
-                display_config = config.get("display")
-                if not isinstance(display_config, dict):
-                    display_config = {}
-                    config["display"] = display_config
-                display_config["personality"] = args
+                config["agent"]["system_prompt"] = new_prompt
                 atomic_yaml_write(config_path, config)
             except Exception as e:
                 return t("gateway.personality.save_failed", error=str(e))
 
             # Update in-memory so it takes effect on the very next message.
-            self._ephemeral_system_prompt = compose_system_prompt(base_prompt, overlay_prompt)
+            self._ephemeral_system_prompt = new_prompt
 
             return t("gateway.personality.set_to", name=args)
 
@@ -13313,12 +13294,6 @@ class GatewayRunner:
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
-            session_id=context.session_id,
-            route_target=context.source.route_target or "",
-            route_label=context.source.route_label or "",
-            route_mode=context.source.route_mode or "",
-            route_notebook=context.source.route_notebook or "",
-            route_notebook_id=context.source.route_notebook_id or "",
         )
 
     def _clear_session_env(self, tokens: list) -> None:
@@ -16647,13 +16622,13 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
 
         if tick_count % IMAGE_CACHE_EVERY == 0:
             try:
-                removed = cleanup_image_cache(max_age_hours=48)
+                removed = cleanup_image_cache(max_age_hours=24)
                 if removed:
                     logger.info("Image cache cleanup: removed %d stale file(s)", removed)
             except Exception as e:
                 logger.debug("Image cache cleanup error: %s", e)
             try:
-                removed = cleanup_document_cache(max_age_hours=48)
+                removed = cleanup_document_cache(max_age_hours=24)
                 if removed:
                     logger.info("Document cache cleanup: removed %d stale file(s)", removed)
             except Exception as e:

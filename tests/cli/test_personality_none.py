@@ -1,13 +1,12 @@
-"""Tests for /personality overlay activation and clearing."""
-from unittest.mock import MagicMock, patch
-
+"""Tests for /personality none — clearing personality overlay."""
 import pytest
+from unittest.mock import MagicMock, patch, mock_open
 import yaml
 
 
 # ── CLI tests ──────────────────────────────────────────────────────────────
 
-class TestCLIPersonalityOverlay:
+class TestCLIPersonalityNone:
 
     def _make_cli(self, personalities=None):
         from cli import HermesCLI
@@ -16,29 +15,28 @@ class TestCLIPersonalityOverlay:
             "helpful": "You are helpful.",
             "concise": "You are concise.",
         }
-        cli.base_system_prompt = "Base operating rules."
-        cli.system_prompt = "Base operating rules.\n\nYou are kawaii~"
+        cli.system_prompt = "You are kawaii~"
         cli.agent = MagicMock()
         cli.console = MagicMock()
         return cli
 
-    def test_none_clears_active_personality_but_preserves_base_prompt(self):
+    def test_none_clears_system_prompt(self):
         cli = self._make_cli()
         with patch("cli.save_config_value", return_value=True):
             cli._handle_personality_command("/personality none")
-        assert cli.system_prompt == "Base operating rules."
+        assert cli.system_prompt == ""
 
-    def test_default_clears_active_personality_but_preserves_base_prompt(self):
+    def test_default_clears_system_prompt(self):
         cli = self._make_cli()
         with patch("cli.save_config_value", return_value=True):
             cli._handle_personality_command("/personality default")
-        assert cli.system_prompt == "Base operating rules."
+        assert cli.system_prompt == ""
 
-    def test_neutral_clears_active_personality_but_preserves_base_prompt(self):
+    def test_neutral_clears_system_prompt(self):
         cli = self._make_cli()
         with patch("cli.save_config_value", return_value=True):
             cli._handle_personality_command("/personality neutral")
-        assert cli.system_prompt == "Base operating rules."
+        assert cli.system_prompt == ""
 
     def test_none_forces_agent_reinit(self):
         cli = self._make_cli()
@@ -46,22 +44,17 @@ class TestCLIPersonalityOverlay:
             cli._handle_personality_command("/personality none")
         assert cli.agent is None
 
-    def test_none_saves_active_personality_to_config_not_system_prompt(self):
+    def test_none_saves_to_config(self):
         cli = self._make_cli()
         with patch("cli.save_config_value", return_value=True) as mock_save:
             cli._handle_personality_command("/personality none")
-        calls = [call.args for call in mock_save.call_args_list]
-        assert ("agent.active_personality", "") in calls
-        assert ("agent.system_prompt", "") not in calls
+        mock_save.assert_called_once_with("agent.system_prompt", "")
 
-    def test_known_personality_composes_base_and_overlay(self):
+    def test_known_personality_still_works(self):
         cli = self._make_cli()
-        with patch("cli.save_config_value", return_value=True) as mock_save:
+        with patch("cli.save_config_value", return_value=True):
             cli._handle_personality_command("/personality helpful")
-        assert cli.system_prompt == "Base operating rules.\n\nYou are helpful."
-        calls = [call.args for call in mock_save.call_args_list]
-        assert ("agent.active_personality", "helpful") in calls
-        assert not any(call == ("agent.system_prompt", "You are helpful.") for call in calls)
+        assert cli.system_prompt == "You are helpful."
 
     def test_unknown_personality_shows_none_in_available(self, capsys):
         cli = self._make_cli()
@@ -79,7 +72,7 @@ class TestCLIPersonalityOverlay:
 
 # ── Gateway tests ──────────────────────────────────────────────────────────
 
-class TestGatewayPersonalityOverlay:
+class TestGatewayPersonalityNone:
 
     def _make_event(self, args=""):
         event = MagicMock()
@@ -90,26 +83,18 @@ class TestGatewayPersonalityOverlay:
     def _make_runner(self, personalities=None):
         from gateway.run import GatewayRunner
         runner = GatewayRunner.__new__(GatewayRunner)
-        runner._ephemeral_system_prompt = "Base operating rules.\n\nYou are kawaii~"
+        runner._ephemeral_system_prompt = "You are kawaii~"
         runner.config = {
             "agent": {
-                "system_prompt": "Base operating rules.",
-                "active_personality": "kawaii",
-                "personalities": personalities or {"helpful": "You are helpful."},
+                "personalities": personalities or {"helpful": "You are helpful."}
             }
         }
         return runner
 
     @pytest.mark.asyncio
-    async def test_none_preserves_configured_base_prompt(self, tmp_path):
+    async def test_none_clears_ephemeral_prompt(self, tmp_path):
         runner = self._make_runner()
-        config_data = {
-            "agent": {
-                "personalities": {"helpful": "You are helpful."},
-                "system_prompt": "Base operating rules.",
-                "active_personality": "kawaii",
-            }
-        }
+        config_data = {"agent": {"personalities": {"helpful": "You are helpful."}, "system_prompt": "kawaii"}}
         config_file = tmp_path / "config.yaml"
         config_file.write_text(yaml.dump(config_data))
 
@@ -117,54 +102,21 @@ class TestGatewayPersonalityOverlay:
             event = self._make_event("none")
             result = await runner._handle_personality_command(event)
 
-        saved = yaml.safe_load(config_file.read_text())
-        assert runner._ephemeral_system_prompt == "Base operating rules."
-        assert saved["agent"]["system_prompt"] == "Base operating rules."
-        assert saved["agent"]["active_personality"] == ""
+        assert runner._ephemeral_system_prompt == ""
         assert "cleared" in result.lower()
 
     @pytest.mark.asyncio
-    async def test_default_preserves_configured_base_prompt(self, tmp_path):
+    async def test_default_clears_ephemeral_prompt(self, tmp_path):
         runner = self._make_runner()
-        config_data = {
-            "agent": {
-                "personalities": {"helpful": "You are helpful."},
-                "system_prompt": "Base operating rules.",
-                "active_personality": "helpful",
-            }
-        }
+        config_data = {"agent": {"personalities": {"helpful": "You are helpful."}}}
         config_file = tmp_path / "config.yaml"
         config_file.write_text(yaml.dump(config_data))
 
         with patch("gateway.run._hermes_home", tmp_path):
             event = self._make_event("default")
-            await runner._handle_personality_command(event)
+            result = await runner._handle_personality_command(event)
 
-        saved = yaml.safe_load(config_file.read_text())
-        assert runner._ephemeral_system_prompt == "Base operating rules."
-        assert saved["agent"]["system_prompt"] == "Base operating rules."
-        assert saved["agent"]["active_personality"] == ""
-
-    @pytest.mark.asyncio
-    async def test_set_personality_replaces_non_mapping_display_config(self, tmp_path):
-        runner = self._make_runner()
-        config_data = {
-            "display": "legacy-invalid-value",
-            "agent": {
-                "personalities": {"helpful": "You are helpful."},
-                "system_prompt": "Base operating rules.",
-            },
-        }
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump(config_data))
-
-        with patch("gateway.run._hermes_home", tmp_path):
-            event = self._make_event("helpful")
-            await runner._handle_personality_command(event)
-
-        saved = yaml.safe_load(config_file.read_text())
-        assert saved["display"] == {"personality": "helpful"}
-        assert saved["agent"]["active_personality"] == "helpful"
+        assert runner._ephemeral_system_prompt == ""
 
     @pytest.mark.asyncio
     async def test_list_includes_none(self, tmp_path):
@@ -202,42 +154,7 @@ class TestGatewayPersonalityOverlay:
             event = self._make_event("")
             result = await runner._handle_personality_command(event)
 
-        assert "No personalities configured" not in result
-        assert "`concise`" in result
-        assert "`pirate`" in result
-
-    @pytest.mark.asyncio
-    async def test_builtin_personality_sets_active_personality_and_composes_prompt(self, tmp_path):
-        runner = self._make_runner(personalities={})
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump({"agent": {"system_prompt": "Base operating rules.", "personalities": {}}}))
-
-        with patch("gateway.run._hermes_home", tmp_path):
-            event = self._make_event("concise")
-            result = await runner._handle_personality_command(event)
-
-        saved = yaml.safe_load(config_file.read_text())
-        assert "Personality set" in result
-        assert runner._ephemeral_system_prompt.startswith("Base operating rules.\n\n")
-        assert "concise assistant" in runner._ephemeral_system_prompt
-        assert saved["agent"]["system_prompt"] == "Base operating rules."
-        assert saved["agent"]["active_personality"] == "concise"
-
-    @pytest.mark.asyncio
-    async def test_none_clears_active_personality_without_custom_personalities(self, tmp_path):
-        runner = self._make_runner(personalities={})
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump({"agent": {"personalities": {}, "system_prompt": "Base operating rules.", "active_personality": "kawaii"}}))
-
-        with patch("gateway.run._hermes_home", tmp_path):
-            event = self._make_event("none")
-            result = await runner._handle_personality_command(event)
-
-        saved = yaml.safe_load(config_file.read_text())
-        assert "cleared" in result.lower()
-        assert runner._ephemeral_system_prompt == "Base operating rules."
-        assert saved["agent"]["system_prompt"] == "Base operating rules."
-        assert saved["agent"]["active_personality"] == ""
+        assert result == "No personalities configured in `~/.hermes/profiles/coder/config.yaml`"
 
 
 class TestPersonalityDictFormat:
@@ -247,8 +164,7 @@ class TestPersonalityDictFormat:
         from cli import HermesCLI
         cli = HermesCLI.__new__(HermesCLI)
         cli.personalities = personalities
-        cli.base_system_prompt = "Base operating rules."
-        cli.system_prompt = "Base operating rules."
+        cli.system_prompt = ""
         cli.agent = None
         cli.console = MagicMock()
         return cli
@@ -292,7 +208,7 @@ class TestPersonalityDictFormat:
         cli = self._make_cli({"helper": "You are helpful."})
         with patch("cli.save_config_value", return_value=True):
             cli._handle_personality_command("/personality helper")
-        assert cli.system_prompt == "Base operating rules.\n\nYou are helpful."
+        assert cli.system_prompt == "You are helpful."
 
     def test_resolve_prompt_dict_no_tone_no_style(self):
         from cli import HermesCLI
